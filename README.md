@@ -166,7 +166,7 @@ For Sub-Task 3, we will evaluate system output using BERTScore.
 
 https://www.codabench.org/competitions/8730/
 
-# AraHealthQA 2025 Shared task - Track 1 (sub-task 3)
+#  MentalQA 2025: AraHealthQA 2025 Shared task - Track 1 (sub-task 3) 
 
 Track 1: MentalQA 2025
 This track includes three sub-tasks hosted separately on Codabench. Please register individually for each sub-task you wish to participate in:
@@ -233,6 +233,25 @@ For Sub-Task 1 and Sub-Task 2 — both formulated as multi-label classification 
 For Sub-Task 3, we will evaluate system output using BERTScore.
 
 https://www.codabench.org/competitions/8649/
+
+
+
+## Multi-label question categorization: 
+
+Dataset: https://github.com/hasanhuz/MentalQA/blob/main/sub_task1.zip
+
+
+
+## Multi-label answer categorization:
+
+Dataset: https://github.com/hasanhuz/MentalQA/blob/main/sub_task2.zip
+
+
+
+## Patient-doctor question answering:
+
+Dataset: https://github.com/hasanhuz/MentalQA/blob/main/sub_task3.zip
+
 _________________________________
 
 # AraHealthQA 2025 Shared task - Track 2 (Sub-task 1)
@@ -276,6 +295,21 @@ Alongside the other subtask, this track is intended to provide a comprehensive b
 https://www.codabench.org/competitions/8967/
 
 
+
+## Multiple choice questions:
+
+Dataset: https://github.com/nyuad-cai/MedArabiQ/blob/main/datasets/multiple-choice-questions.csv
+
+
+## Multiple choice questions with bias
+
+Dataset: https://github.com/nyuad-cai/MedArabiQ/blob/main/datasets/multiple-choice-withbias.csv
+
+
+
+## Fill-in-the-blank with choices: 
+
+Dataset: https://github.com/nyuad-cai/MedArabiQ/blob/main/datasets/fill-in-the-blank-choices.csv
 ______________________
 
 # AraHealthQA 2025 Shared task - Track 2 (Sub-task 2)
@@ -322,6 +356,27 @@ Alongside the other subtask, this track is intended to provide a comprehensive b
 For additional information, refer to the ori
 
 https://www.codabench.org/competitions/8740/
+## Fill-in-the-blank without choices
+
+Dataset: https://github.com/nyuad-cai/MedArabiQ/blob/main/datasets/fill-in-the-blank-nochoices.csv
+
+
+
+## Patient-doctor Q&A:
+
+Dataset: https://github.com/nyuad-cai/MedArabiQ/blob/main/datasets/patient-doctor-qa.csv
+
+
+## Q&A with Grammatical Error Correction (GEC)
+
+Dataset: https://github.com/nyuad-cai/MedArabiQ/blob/main/datasets/patient-doctor-qa-gec.csv
+
+
+
+## Q&A with LLM modifications
+
+Dataset: https://github.com/nyuad-cai/MedArabiQ/blob/main/datasets/patient-doctor-qa-llm.csv
+
 __________________________
 
 
