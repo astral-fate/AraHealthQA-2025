@@ -25,17 +25,18 @@ client = OpenAI(
 )
 
 INPUT_TSV  = '/content/drive/MyDrive/AraHealthQA/fitbt2/subtask2_questions.tsv'
-OUTPUT_CSV = '/content/drive/MyDrive/AraHealthQA/fitbt2/predictions_fitb_nochoices_deepseek.csv' # Changed output filename for clarity
+OUTPUT_CSV = '/content/drive/MyDrive/AraHealthQA/fitbt2/predictions_fitb_mixed_deepseek.csv' # Changed output filename for clarity
 
 # --- Function to Generate Answers ---
 def generate_answer(question):
     """
-    Sends a question to the NVIDIA API to be processed by the deepseek model
-    using a streaming response. It accumulates the streamed content and then
-    applies cleaning logic to extract only the Arabic answer.
+    Dynamically selects a prompt based on the question type (Fill-in-the-Blank vs. Q&A),
+    sends the question to the NVIDIA API, and processes the response.
     """
-    # This system prompt is optimized for fill-in-the-blank tasks.
-    system_prompt = """You are an automated data extraction service. Your only function is to provide the precise Arabic terms that fill the blanks in the user's text. Your output must strictly be the answer(s) and nothing else. Follow these examples perfectly.
+    # MODIFICATION: Two separate prompts for different question types.
+
+    # Prompt 1: For fill-in-the-blank questions.
+    fill_in_blank_prompt = """You are an automated data extraction service. Your only function is to provide the precise Arabic terms that fill the blanks in the user's text. Your output must strictly be the answer(s) and nothing else. Follow these examples perfectly.
 
 Example 1:
 User: "املأ الفراغات: يتم تشخيص المرض بـ ANA و DNA."
@@ -47,24 +48,33 @@ Your perfect response: "التهاب المفاصل"
 
 Now, process the user's request based on these exact rules and examples. Provide only the text for the blank(s)."""
 
+    # Prompt 2: For patient Q&A, designed to handle informal language and spelling errors.
+    patient_qa_prompt = """You are a helpful AI medical assistant. Your goal is to provide a clear, concise, and direct answer to the user's health-related question. The user's query might be in colloquial Arabic or contain spelling errors (أخطاء إملائية); you must understand the core meaning and provide a scientifically accurate response. Do not add conversational text like 'Hello' or 'I hope this helps.' Just provide the direct answer to the question."""
+
+    # MODIFICATION: Logic to select the correct prompt.
+    if "_____" in question:
+        system_prompt = fill_in_blank_prompt
+        print("   -> Detected Fill-in-the-Blank Question.")
+    else:
+        system_prompt = patient_qa_prompt
+        print("   -> Detected Patient Q&A Question.")
+
+
     max_retries = 3
     retry_delay = 5 # seconds
     for attempt in range(max_retries):
         try:
-            # MODIFIED: API call now uses the deepseek model with streaming enabled.
             completion = client.chat.completions.create(
               model="deepseek-ai/deepseek-r1-0528",
               messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": question}],
               temperature=0.6,
               top_p=0.7,
               max_tokens=4096,
-              stream=True  # Streaming is enabled
+              stream=True
             )
 
-            # MODIFIED: Accumulate the response from the stream
             raw_response_text = ""
             for chunk in completion:
-                # The 'reasoning_content' is ignored as we only want the final answer.
                 if chunk.choices[0].delta.content is not None:
                     raw_response_text += chunk.choices[0].delta.content
 
@@ -81,8 +91,8 @@ Now, process the user's request based on these exact rules and examples. Provide
                 time.sleep(retry_delay)
             else:
                 print(f"   -> API Error after multiple retries: {e}")
-                return "API_ERROR" # Return a placeholder on failure
-    return "FAILED_AFTER_RETRIES" # Return a placeholder if all retries fail
+                return "API_ERROR"
+    return "FAILED_AFTER_RETRIES"
 
 # --- Main Execution ---
 def main():
@@ -91,8 +101,6 @@ def main():
     and save them to a CSV file.
     """
     try:
-        # Read the TSV file without a header.
-        # The questions are in the first column (index 0).
         df = pd.read_csv(INPUT_TSV, sep='\t', header=None)
     except FileNotFoundError:
         print(f"Error: The input file '{INPUT_TSV}' was not found.")
@@ -103,9 +111,7 @@ def main():
     predictions = []
     total_questions = len(df)
 
-    # Loop through the DataFrame, accessing questions from the first column.
     for index, row in df.iterrows():
-        # The question is in the first column (index 0)
         question = row[0]
         if pd.isna(question) or not str(question).strip():
             print(f"Skipping empty line at row {index + 1}/{total_questions}.")
@@ -116,11 +122,9 @@ def main():
         predictions.append(answer)
         print(f"   -> Generated Answer: {answer}")
 
-        # Add a short delay to be respectful of API rate limits
         if index < total_questions - 1:
             time.sleep(1)
 
-    # Save the generated predictions to a CSV file without a header or index.
     predictions_df = pd.DataFrame(predictions)
     predictions_df.to_csv(OUTPUT_CSV, header=False, index=False)
     print("\n" + "="*50)
@@ -128,7 +132,6 @@ def main():
     print(f"📄 Results saved to '{OUTPUT_CSV}'.")
     print("="*50)
 
-    # Offer to download the file automatically in Colab
     try:
         files.download(OUTPUT_CSV)
         print(f"\n🚀 Downloading '{OUTPUT_CSV}'...")
