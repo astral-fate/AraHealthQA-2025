@@ -1,6 +1,9 @@
 
 # avilabe LLM in Huggine face
-bert-large-arabic
+
+
+1. bert-large-arabic
+
 google-bert/bert-base-uncased
 
 sentence-transformers/all-mpnet-base-v2
