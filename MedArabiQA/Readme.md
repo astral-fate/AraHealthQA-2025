@@ -438,75 +438,96 @@ julien-c/dummy-unknown
 
 ## setting up BiMediX2
 
+the sequential code cells to prepare your environment, install the correct dependencies, and start the local vLLM server to run the `BiMediX2` model.
 
-```
-# Cell 1: Install requirements and start the server
-# Note: The vLLM server will run continuously in the background.
-!pip install "vllm==0.6.1.post1" "transformers==4.45.2" -q
+This process is broken down into clear, sequential steps. Please execute them in order.
 
-import os
-# This command starts the server as a background process
-os.system("nohup vllm serve MBZUAI/BiMediX2-8B-hf --max-model-len 32000 --port 8000 --trust-remote-code > vllm_server.log 2>&1 &")
+### Step 1: Install Dependencies
 
-# Give the server a moment to start up
-import time
-time.sleep(60) # Wait for 1 minute for the server to initialize
-print("✅ vLLM Server for BiMediX2 started in the background.")
+This first cell handles the installation of all necessary packages. It begins by removing libraries that often cause version conflicts in notebook environments, then installs the specific versions required for `vLLM` and `BiMediX2` to function correctly.
 
+```python
+# Cell 1: Definitive installation of all required packages
 
-# Cell 1: Corrected installation process to fix dependency conflicts
-
-# First, force the upgrade of the core libraries to versions that satisfy the requirements.
-# This resolves the torch, torchaudio, and numpy version conflicts.
-print("Step 1: Upgrading core libraries (torch, torchaudio, numpy)...")
-!pip install --upgrade torch torchaudio numpy -q
-
-# Now, install the specific versions required for the BiMediX2 model
-print("Step 2: Installing vLLM and Transformers...")
-!pip install "vllm==0.6.1.post1" "transformers==4.45.2" -q
-
-print("\n✅ All packages installed successfully!")
-print("🔴 IMPORTANT: Please restart the session now.")
-
-
-# Cell 1: Definitive installation of all required packages with compatible versions
-
-print("Installing all required packages with specific, compatible versions. This may take a few minutes...")
-
-# This single command installs vllm and its exact dependencies,
-# then finds compatible versions for the other libraries.
-!pip install "torch==2.4.0" "numpy==1.26.4" "vllm==0.6.1.post1" "transformers==4.45.2" openai rouge-score bert-score nltk -q
-
-print("\nInstallation attempt complete. Please check the log above for any ERROR messages.")
-print("If there are no errors, please restart the session now to load the correct versions.")
-
-
-# Cell 1: Definitive installation by first removing conflicting packages
-
-print("Step 1: Uninstalling conflicting pre-installed packages (torchaudio, thinc)...")
-# The -y flag automatically confirms the uninstall.
+print("Step 1: Uninstalling potentially conflicting pre-installed packages...")
+# The -y flag automatically confirms the uninstall to avoid prompts.
 !pip uninstall -y torchaudio thinc torchvision fastai
 
 print("\nStep 2: Installing all required packages with specific, compatible versions...")
-# This single command installs vllm and its exact dependencies,
-# then finds compatible versions for the other libraries.
-!pip install "torch==2.4.0" "numpy==1.26.4" "vllm==0.6.1.post1" "transformers==4.45.2" openai rouge-score bert-score nltk -q
+# This command installs vllm, transformers, and other necessary libraries with versions known to be compatible.
+!pip install "torch==2.4.0" "numpy==1.26.4" "vllm==0.6.1.post1" "transformers==4.45.2" openai scikit-learn -q
 
-print("\nInstallation attempt complete. Please check the log above for any ERROR messages.")
-print("If there are no errors, please restart the session now to load the correct versions.")
-
-
-
-import os
-# This command starts the server as a background process
-os.system("nohup vllm serve MBZUAI/BiMediX2-8B-hf --max-model-len 32000 --port 8000 --trust-remote-code > vllm_server.log 2>&1 &")
-
-# Give the server a moment to start up
-import time
-time.sleep(60) # Wait for 1 minute for the server to initialize
-print("✅ vLLM Server for BiMediX2 started in the background.")
+print("\n✅ Installation attempt complete.")
+print("Please check the log above for any ERROR messages.")
 ```
 
+-----
+
+### Step 2: Restart Your Session
+
+🔴 **CRITICAL ACTION REQUIRED** 🔴
+
+After the installation in Step 1 is complete, you **must restart your runtime environment**. This is essential for the newly installed library versions to be loaded correctly.
+
+  * **In Google Colab:** Go to the menu and select `Runtime` -\> `Restart session`.
+  * **In Jupyter Notebook:** Go to the menu and select `Kernel` -\> `Restart`.
+
+-----
+
+### Step 3: Start the vLLM Server
+
+After restarting the session, run the following cell. This command will start the vLLM server in the background, loading the `MBZUAI/BiMediX2-8B-hf` model and making it available on `localhost` at port `8000`.
+
+```python
+# Cell 2: Start the vLLM Server
+import os
+import time
+
+print("🚀 Starting vLLM server in the background...")
+
+# This command starts the server as a background process.
+# --port 8000 specifies the local port.
+# Logs are saved to 'vllm_server.log' to keep this notebook clean.
+os.system("nohup vllm serve MBZUAI/BiMediX2-8B-hf --max-model-len 32000 --port 8000 --trust-remote-code > vllm_server.log 2>&1 &")
+
+# Give the server a moment to initialize the model. This might take a few minutes.
+print("⏳ Waiting for 90 seconds for the server to initialize...")
+time.sleep(90)
+
+print("\n✅ vLLM Server for BiMediX2 should now be running.")
+print("ℹ️ You can check the 'vllm_server.log' file for detailed status or errors.")
+```
+
+-----
+
+### Step 4: Initialize the OpenAI Client and Test Connection
+
+Finally, run this cell to create the OpenAI client object that will communicate with your local server. A test call is made to ensure the connection is successful.
+
+```python
+# Cell 3: Initialize OpenAI client and verify connection
+from openai import OpenAI
+
+# Configure the client to connect to your local vLLM server.
+# The api_key is not required for local vLLM instances.
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="NOT_USED"
+)
+
+# --- Test the connection ---
+try:
+    models = client.models.list()
+    print("✅ Successfully connected to the vLLM server!")
+    print(f"Available model(s): {[m.id for m in models.data]}")
+except Exception as e:
+    print(f"🔴 Failed to connect to the server.")
+    print("Please check the 'vllm_server.log' file for any error messages.")
+    print(f"Error details: {e}")
+
+```
+
+Your environment is now fully prepared. You can proceed to use the `client` object to run predictions with the BiMediX2 model as shown in the main classification scripts.
 
 # resourses
 
