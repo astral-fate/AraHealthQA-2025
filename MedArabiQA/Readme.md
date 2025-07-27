@@ -506,3 +506,8 @@ import time
 time.sleep(60) # Wait for 1 minute for the server to initialize
 print("✅ vLLM Server for BiMediX2 started in the background.")
 ```
+
+
+# resourses
+
+https://huggingface.co/MBZUAI/BiMediX2-8B-hf
