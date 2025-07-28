@@ -10,7 +10,7 @@
 ## camel fine-tuned 
 - f1 score 60
 
-# ??
+# ?? system error (350 on the dev set)
 
 - f1 score 99
 2025-07-27 14:06
