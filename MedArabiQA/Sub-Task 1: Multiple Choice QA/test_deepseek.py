@@ -6,7 +6,6 @@ import time
 from google.colab import userdata, files
 
 # --- NVIDIA API Configuration ---
-# Ensure you have your NVIDIA_API_KEY set up in your Colab secrets.
 try:
     NVIDIA_API_KEY = userdata.get('NVIDIA_API_KEY')
     if NVIDIA_API_KEY is None:
@@ -21,130 +20,101 @@ client = OpenAI(
 )
 
 # --- File Paths ---
-# Define the input and output file paths.
-INPUT_TSV  = '/content/drive/MyDrive/AraHealthQA/t2t1/subtask1_questions.tsv'
-# Updated output file name to reflect the new model being used.
-OUTPUT_CSV = '/content/drive/MyDrive/AraHealthQA/t2t1/predictions_multiple_choice_mistral_7b.csv'
+INPUT_CSV = "/content/drive/MyDrive/AraHealthQA/t2t1/subtask1_questions.tsv" # Assuming this file contains multiple-choice questions
+OUTPUT_CSV = "/content/drive/MyDrive/AraHealthQA/t2t1/deepseek_1_answers.csv"
 
+# --- Function to Generate Answers ---
 def generate_answer(question):
     """
-    Dynamically selects a prompt based on the question type (Multiple-Choice vs. Patient Q&A),
-    sends the question to the NVIDIA API using the Mistral model, and processes the response.
+    Sends a question to the NVIDIA API, asking for a chain of thought before
+    the final answer. It prints the thought process and extracts only the final letter.
     """
-    # This prompt is designed for multiple-choice questions.
-    multiple_choice_prompt = """You are an AI expert specializing in medical and scientific questions. Your only function is to analyze the user's multiple-choice question and identify the single most accurate answer from the provided options (أ, ب, ج, د, ه, etc.).
+    system_prompt = """You are an automated answering service. Your function is to first show your reasoning and then provide the correct answer. Follow these rules exactly:
+1.  First, think step-by-step about the user's question. Enclose your entire reasoning process within `<thinking>` and `</thinking>` tags.
+2.  After the closing `</thinking>` tag, you MUST provide the single Arabic letter (e.g., أ, ب, ت, ج, د) corresponding to the correct answer.
+3.  The final letter must be the ONLY thing outside of the thinking tags.
 
-Follow these rules perfectly:
-1.  Read the question and all the options carefully. The question may ask for the correct or incorrect statement.
-2.  Your output MUST be ONLY the text of the correct answer.
-3.  Do NOT include the letter (e.g., 'أ.' or 'ب.'), explanations, or any other conversational text.
-
-Example 1:
-User: "نستخدم أغشية مصنوعة من ________ في تقنيات التبقيع. أ. النايلون أو السيللوز. ب. Amino acyl site. ج. Peptide site. د. الاسيتونتريل مع مادة TEAA."
-Your perfect response: "النايلون أو السيللوز."
-
-Example 2:
+Example:
 User: "في التهاب المشيمية نصادف الأشكال الالتهابية التالية: (الخاطئة) أ. التهاب مشيمية نتحي ب. التهاب مشيمية منتثر ج. التهاب مشيمية أمامية د. التهاب مشيمية مركزي ه. التهاب مشيمية زاوي"
-Your perfect response: "التهاب مشيمية زاوي"
+Your perfect response: "<thinking>The user wants the INCORRECT option. Choroiditis can be exudative, diffuse, central, and juxtapapillary (angular). Anterior choroiditis is not a standard classification. Therefore, the incorrect option is 'Anterior choroiditis'. The corresponding letter is أ.</thinking> أ"
 
-Now, process the user's request based on these exact rules and examples. Provide only the text of the correct answer."""
+Now, process the user's request based on these exact rules.
+"""
+    try:
+        completion = client.chat.completions.create(
+          model="deepseek-ai/deepseek-r1",
+          messages=[
+              {"role": "system", "content": system_prompt},
+              {"role": "user", "content": question}
+          ],
+          temperature=0.2,
+          top_p=0.7,
+          max_tokens=1024,
+          stream=True
+        )
 
-    # This prompt is a placeholder for patient Q&A questions.
-    patient_qa_prompt = """You are an AI medical assistant providing triage advice...""" # Remainder of prompt omitted for brevity
+        raw_response_text = ""
+        for chunk in completion:
+            if chunk.choices[0].delta.content is not None:
+                raw_response_text += chunk.choices[0].delta.content
 
-    # Detect question type and select the appropriate system prompt.
-    if re.search(r'أ\.|ب\.|ج\.', question):
-        system_prompt = multiple_choice_prompt
-        print("   -> Detected Multiple-Choice Question.")
-    else:
-        system_prompt = patient_qa_prompt
-        print("   -> Detected Patient Q&A Question.")
+        print(f"   -> Raw Model Response (with thought process):\n{raw_response_text}\n" + "-"*20)
 
-    # --- API Call with Retry Logic ---
-    max_retries = 3
-    retry_delay = 5 # seconds
-    for attempt in range(max_retries):
-        try:
-            # The API call now uses the specified Mistral model.
-            completion = client.chat.completions.create(
-              model="mistralai/mistral-7b-instruct-v0.3",
-              messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": question}],
-              temperature=0.1,
-              top_p=0.7,
-              max_tokens=100,
-              stream=True
-            )
+        final_answer_text = re.sub(r'<thinking>.*?</thinking>', '', raw_response_text, flags=re.DOTALL).strip()
 
-            # Process the streaming response.
-            raw_response_text = ""
-            for chunk in completion:
-                if chunk.choices[0].delta.content is not None:
-                    raw_response_text += chunk.choices[0].delta.content
+        # MODIFIED: Changed re.match to re.search for more flexible parsing.
+        # This will now correctly find 'ه' in 'هـ' and ignore the extra character.
+        match = re.search(r'([أ-ي])', final_answer_text)
 
-            print(f"   -> Raw API Response: '{raw_response_text.strip()}'")
+        if match:
+            final_answer = match.group(1)
+        else:
+            final_answer = "PARSE_FAIL"
 
-            # Remove any <think> blocks from the response.
-            text_without_think_block = re.sub(r'<think>.*?</think>', '', raw_response_text, flags=re.DOTALL)
+        return final_answer
 
-            # Filter the text to keep only relevant characters (Arabic, English, numbers, common symbols).
-            improved_filter = r'[^\u0600-\u06FF\u0660-\u06690-9a-zA-Z\s،.+-=/]'
-            final_cleaned_text = re.sub(improved_filter, '', text_without_think_block)
+    except Exception as e:
+        print(f"   -> An API or other error occurred: {e}")
+        return "ERROR"
 
-            return final_cleaned_text.strip()
-
-        except Exception as e:
-            if attempt < max_retries - 1:
-                print(f"   -> An error occurred: {e}. Retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
-            else:
-                print(f"   -> API Error after multiple retries: {e}")
-                return "API_ERROR"
-    return "FAILED_AFTER_RETRIES"
-
-
-
+# --- Main Execution ---
 def main():
     """
-    Main function to read questions from a TSV file, generate predictions
-    using the Mistral model, and save them to a CSV file.
+    Reads questions from a TSV file, generates predictions with thought processes,
+    and saves only the final letter answers.
     """
     try:
-        df = pd.read_csv(INPUT_TSV, sep='\t', header=None)
+        df = pd.read_csv(INPUT_TSV, sep='\t', header=None, on_bad_lines='skip')
     except FileNotFoundError:
         print(f"Error: The input file '{INPUT_TSV}' was not found.")
-        print("Please make sure you have uploaded your 'subtask1_questions.tsv' file.")
         return
 
-    # Updated print statement to reflect the new model.
-    print(f"Starting prediction generation for {len(df)} questions using mistralai/mistral-7b-instruct-v0.3...")
+    print(f"Starting prediction generation for {len(df)} questions using '{'igenius/colosseum_355b_instruct_16k'}'...")
     predictions = []
     total_questions = len(df)
 
-    # Iterate through each question in the input file.
     for index, row in df.iterrows():
         question = row[0]
         if pd.isna(question) or not str(question).strip():
             print(f"Skipping empty line at row {index + 1}/{total_questions}.")
+            predictions.append("EMPTY_ROW")
             continue
 
         print(f"Processing question {index + 1}/{total_questions}...")
-        answer = generate_answer(str(question))
+        answer = generate_answer(str(question).strip())
         predictions.append(answer)
-        print(f"   -> Generated Answer: '{answer}'")
+        print(f"   -> Generated Answer (for CSV): {answer}")
 
-        # A short delay to avoid hitting API rate limits.
         if index < total_questions - 1:
-            time.sleep(0.5)
+            time.sleep(1)
 
-    # Save the predictions to a CSV file.
     predictions_df = pd.DataFrame(predictions)
     predictions_df.to_csv(OUTPUT_CSV, header=False, index=False)
     print("\n" + "="*50)
-    print(f"✅ Successfully generated all predictions.")
-    print(f"📄 Results saved to '{OUTPUT_CSV}'.")
+    print(f"✅ Prediction process completed.")
+    print(f"📄 Results saved to '{OUTPUT_CSV}'. The file will contain only the final letters.")
     print("="*50)
 
-    # Attempt to download the file in the Colab environment.
     try:
         files.download(OUTPUT_CSV)
         print(f"\n🚀 Downloading '{OUTPUT_CSV}'...")
