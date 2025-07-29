@@ -20,7 +20,7 @@ client = OpenAI(
 )
 
 # --- File Paths ---
-INPUT_CSV = "/content/drive/MyDrive/AraHealthQA/t2t1/subtask1_questions.tsv" # Assuming this file contains multiple-choice questions
+INPUT_TSV = "/content/drive/MyDrive/AraHealthQA/t2t1/subtask1_questions.tsv"
 OUTPUT_CSV = "/content/drive/MyDrive/AraHealthQA/t2t1/deepseek_1_answers.csv"
 
 # --- Function to Generate Answers ---
@@ -42,7 +42,7 @@ Now, process the user's request based on these exact rules.
 """
     try:
         completion = client.chat.completions.create(
-          model="deepseek-ai/deepseek-r1",
+          model="igenius/colosseum_355b_instruct_16k",
           messages=[
               {"role": "system", "content": system_prompt},
               {"role": "user", "content": question}
