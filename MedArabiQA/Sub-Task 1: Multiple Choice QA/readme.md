@@ -160,6 +160,22 @@ mistral-7b-instruct-v0.2
 mixtral-8x7b-instruct-v0.1
 </details>
 
+Top Recommendations
+These models have features that make them the most likely to succeed for your specific medical and Arabic test case.
+
+palmyra-med-70b / palmyra-med-70b-32k
+
+Why it's the top choice: This is the only model in your list with "med" explicitly in its name. This indicates it has been specifically fine-tuned on medical data. At 70 billion parameters, it is a large and powerful model that likely retains strong multilingual capabilities from its base model, which would include Arabic. This is the most direct fit for your request. The 32k version simply offers a larger context window for longer documents or conversations.
+
+falcon3-7b-instruct
+
+Why it's a strong contender: Falcon models were originally developed by the Technology Innovation Institute (TII) in the United Arab Emirates (UAE). Because of their origin, they often have a stronger foundation and perform better in Arabic than many other Western or Eastern models. While it's smaller (7B parameters), its specialized regional training could make it surprisingly effective.
+
+qwen3-235b-a22b
+
+Why it's a strong contender: This is a massive model from Alibaba (235 billion parameters). The Qwen series is famous for its exceptional multilingual capabilities, including excellent performance in Arabic. While not medically specialized, its sheer size and advanced reasoning may allow it to understand complex medical terminology and provide accurate answers in Arabic simply due to its vast training data.
+
+
 https://huggingface.co/spaces/TachyHealth/open_medical_llm_leaderboard_by_openlifescienceai
 
 https://huggingface.co/baichuan-inc/Baichuan-M1-14B-Instruct
