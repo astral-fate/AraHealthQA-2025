@@ -1,3 +1,7 @@
+# pip install -U bitsandbytes
+# pip install pandas torch transformers accelerate bitsandbytes
+
+
 import os
 import re
 import pandas as pd
