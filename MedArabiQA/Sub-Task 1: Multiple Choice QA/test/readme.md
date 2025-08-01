@@ -82,3 +82,9 @@ Teams intending to participate are invited to fill in the form on the official w
 | 9 | palmyra-med-70b / palmyra-med-70b-32k | 49% |
 | 10| Baichuan | 30~37 or 20~ |
 | 11| MedGemma | 38% |
+
+
+# resources
+
+https://console.groq.com/playground
+https://build.nvidia.com/models?q=mixtral-8x22b
