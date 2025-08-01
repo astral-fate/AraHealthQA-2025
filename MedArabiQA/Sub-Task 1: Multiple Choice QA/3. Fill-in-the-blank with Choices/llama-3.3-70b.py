@@ -23,8 +23,8 @@ client = groq.Client(api_key=GROQ_API_KEY)
 # --- File paths and column names for the MCQ task ---
 # NOTE: The input CSV name suggests a "fill-in-the-blank" task, but the code logic
 # is designed for Multiple Choice. Ensure this is the correct file.
-INPUT_CSV = '/content/drive/MyDrive/AraHealthQA/fill-in-the-blank-choices.csv'
-OUTPUT_CSV = '/content/drive/MyDrive/AraHealthQA/predictions_fitb_choices.csv'
+INPUT_CSV = '/content/drive/MyDrive/AraHealthQA/t2t1/data/fill-in-the-blank-choices.csv'
+OUTPUT_CSV = '/content/drive/MyDrive/AraHealthQA/t2t1/final_result/predictions_fitb_choices.csv'
 
 # --- UPDATED: Correct column names as per your specification ---
 QUESTION_COLUMN = 'Question - Arabic'
