@@ -86,5 +86,5 @@ Teams intending to participate are invited to fill in the form on the official w
 
 # resources
 
-https://console.groq.com/playground
-https://build.nvidia.com/models?q=mixtral-8x22b
+- https://console.groq.com/playground
+- https://build.nvidia.com/models?q=mixtral-8x22b
