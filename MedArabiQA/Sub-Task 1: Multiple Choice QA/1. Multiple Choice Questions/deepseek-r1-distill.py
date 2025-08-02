@@ -5,6 +5,12 @@ import time
 from groq import Groq
 from sklearn.metrics import accuracy_score
 import gc
+# Import the userdata module to access Colab secrets
+try:
+    from google.colab import userdata
+except ImportError:
+    # Fallback for environments other than Colab
+    userdata = None
 
 # --- Configuration ---
 # The model name for the Groq API
@@ -181,14 +187,22 @@ def main():
     df.dropna(subset=[QUESTION_COLUMN, ANSWER_COLUMN], inplace=True)
     df.reset_index(drop=True, inplace=True)
 
-    # Initialize the Groq client.
-    # It will automatically look for the GROQ_API_KEY environment variable.
+    # Initialize the Groq client, fetching the API key from Colab secrets.
     try:
-        client = Groq()
+        if userdata:
+            groq_api_key = userdata.get('GROQ_API_KEY')
+            if not groq_api_key:
+                print("❌ GROQ_API_KEY not found in Colab secrets.")
+                return
+            client = Groq(api_key=groq_api_key)
+        else:
+            # Fallback for local execution, expects GROQ_API_KEY as env var
+            client = Groq()
+            
         print("✅ Groq client initialized.")
     except Exception as e:
         print(f"❌ Failed to initialize Groq client. Error: {e}")
-        print("Please ensure the GROQ_API_KEY environment variable is set.")
+        print("Please ensure the GROQ_API_KEY is set in Colab secrets or as an environment variable.")
         return
 
 
