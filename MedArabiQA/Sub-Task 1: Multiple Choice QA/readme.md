@@ -179,3 +179,5 @@ Why it's a strong contender: This is a massive model from Alibaba (235 billion p
 https://huggingface.co/spaces/TachyHealth/open_medical_llm_leaderboard_by_openlifescienceai
 
 https://huggingface.co/baichuan-inc/Baichuan-M1-14B-Instruct
+https://build.nvidia.com/explore/discover
+https://console.groq.com/home
