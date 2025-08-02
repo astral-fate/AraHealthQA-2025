@@ -120,17 +120,32 @@ def generate_answer(question, client):
         return "INFERENCE_ERROR"
 
 
+# --- Helper function for normalization ---
+def normalize_alif(text):
+    """Normalizes different forms of Alif to a plain Alif (ا)."""
+    if isinstance(text, str):
+        return text.replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
+    return text
+
+
 # --- Function to Evaluate MCQ Accuracy ---
 def evaluate_mcq_accuracy(predictions, ground_truths):
-    """Calculates and prints the accuracy of the predictions."""
+    """Calculates and prints the accuracy of the predictions after normalizing Alif."""
     print("\n" + "="*50)
     print("🚀 Starting Evaluation...")
     print("="*50)
 
+    # Normalize both predictions and ground truths before comparison
+    normalized_predictions = [normalize_alif(p) for p in predictions]
+    normalized_ground_truths = [normalize_alif(g) for g in ground_truths]
+
     error_codes = ["INFERENCE_ERROR", ""]
-    valid_indices = [i for i, p in enumerate(predictions) if p not in error_codes]
-    valid_predictions = [predictions[i] for i in valid_indices]
-    valid_ground_truths = [ground_truths[i] for i in valid_indices]
+    # Use normalized predictions for filtering valid indices
+    valid_indices = [i for i, p in enumerate(normalized_predictions) if p not in error_codes]
+
+    # Filter both normalized lists using the valid indices
+    valid_predictions = [normalized_predictions[i] for i in valid_indices]
+    valid_ground_truths = [normalized_ground_truths[i] for i in valid_indices]
 
     if not valid_predictions:
         print("No valid predictions to evaluate. Check for widespread inference or parsing errors.")
@@ -147,7 +162,7 @@ def evaluate_mcq_accuracy(predictions, ground_truths):
     print(f"Valid Predictions to Evaluate: {total_valid_predictions}")
     print("-" * 20)
     print(f"Correct Predictions: {correct_predictions} / {total_valid_predictions}")
-    print(f"📊 Accuracy (on valid responses): {accuracy * 100:.2f}%")
+    print(f"📊 Accuracy (on valid responses, Alif normalized): {accuracy * 100:.2f}%")
     print("="*50 + "\n✅ Evaluation Complete.\n" + "="*50)
 
 
