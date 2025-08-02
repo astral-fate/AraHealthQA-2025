@@ -72,16 +72,33 @@ Teams intending to participate are invited to fill in the form on the official w
 | # | Model's name | Test (blind) |
 |---|---|---|
 | 1 | deepseek-r1-distill-llama-70b (chain of thoughts) | 22% |
-| 2 | BiMediX2 no cot | 37% |
-| 3 | **colosseum_355b_instruct_16k (cot) fallback** | **47%** |
+| 2 | BiMediX2 | 37% |
+| 3 | **colosseum_355b_instruct_16k (cot) fallback** | 47% |
 | 4 | # deepseek-ai/deepseek-r1-0528 + colosseum_355b_instruct_16k Fall back Cot | 48% |
 | 5 | Gemini 2.5 pro | 37% |
-| 6 | BioMistral | 3%7 |
+| 6 | BioMistral | 37% |
 | 7 | OpenBioLLM 8B (after-presossing) | 49% |
 | 8 | Gemini 2.5 pro research ground | 74% |
 | 9 | palmyra-med-70b / palmyra-med-70b-32k | 49% |
-| 10| Baichuan | 30~37 or 20~ |
+| 10| Baichuan | 20% |
 | 11| MedGemma | 38% |
+
+
+
+# results on the dev set
+| Model's name | MCQ | Fill in the blank | Mcq bias | Fill in the blank bias |
+| :--- | :--- | :--- | :--- | :--- |
+| 1. `google/medgamma-27b-it` | Test accuracy: 76% | Test accuracy | Test accuracy | Test accuracy |
+| 2. `palmyra-med-70b / palmyra-med-70b-32k` | 66% | | | |
+| 3. `OpenBioLLM` | Correct Predictions: 32 / 90\<br\>Final Accuracy (on valid responses): 35.56%\<br\>Total Questions Attempted: 100\<br\>Final Unanswered / Error Count: 45\<br\>Valid Predictions to Evaluate: 55 | | | |
+| 4. `BioMistral` | Correct Predictions: 15 / 55\<br\>Accuracy (on valid responses): 27.27% | | | |
+| 5. `BiMedIX2` | 51% | | | |
+| 6. `colosseum_355b_instruct_16k` | 75% | | | |
+| 7. `mixtral-8x22b-instruct-v ->` | 40% | | | |
+| 8. `deepseek-f1-distill-llama-70b (chain of thoughts)` | Final Unanswered / Error Count: 40\<br\>Valid Predictions to Evaluate: 60\<br\>Correct Predictions: 45 / 60\<br\>Accuracy (on valid responses, All normalized): 75.00% | | | |
+| 9. `llama-3.3-70b-versatile` | 66% | | | |
+| 10. `gwen/gwen3-32b` | | | | |
+| 11. `Gemini 2.5` | | | | |
 
 
 # resources
