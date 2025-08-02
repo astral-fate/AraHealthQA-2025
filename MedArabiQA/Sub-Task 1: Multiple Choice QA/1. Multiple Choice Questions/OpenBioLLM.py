@@ -18,7 +18,7 @@ except ImportError:
 # --- File paths and column names ---
 INPUT_CSV = '/content/drive/MyDrive/AraHealthQA/t2t1/data/fill-in-the-blank-choices.csv'
 # Changed output file name for the new model
-OUTPUT_CSV = '/content/drive/MyDrive/AraHealthQA/t2t1/final_result/predictions_fitb_choices_OpenBioLLM.csv' 
+OUTPUT_CSV = '/content/drive/MyDrive/AraHealthQA/t2t1/final_result/predictions_fitb_choices_OpenBioLLM.csv'
 
 # --- Column names ---
 QUESTION_COLUMN = 'Question - Arabic'
@@ -149,11 +149,15 @@ def evaluate_mcq_accuracy(predictions, ground_truths):
         print("No valid predictions to evaluate.")
         return
 
+    # --- Normalization Logic ---
     def normalize_alif(letter):
+        """Replaces all variants of Alif (أ, إ, آ) with a plain Alif (ا)."""
         return letter.replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
 
+    # Apply normalization to both predictions and ground truths
     normalized_predictions = [normalize_alif(p) for p in valid_predictions]
     normalized_ground_truths = [normalize_alif(g) for g in valid_ground_truths]
+    # --- End of Normalization Logic ---
 
     accuracy = accuracy_score(normalized_ground_truths, normalized_predictions)
     correct_predictions = sum(p == g for p, g in zip(normalized_ground_truths, normalized_predictions))
