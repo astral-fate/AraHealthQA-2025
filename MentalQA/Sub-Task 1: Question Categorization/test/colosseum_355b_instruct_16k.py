@@ -179,4 +179,52 @@ def main():
         print("FATAL: NVIDIA_API_KEY not found. Please set it in Colab Secrets or as an environment variable.")
         return
 
-    test_df = load_and_prepare_data(TEST_DATA_PATH, TE
+    test_df = load_and_prepare_data(TEST_DATA_PATH, TEST_LABELS_PATH)
+    if test_df is None or test_df.empty:
+        print("Halting execution due to data loading issues.")
+        return
+
+    try:
+        client = OpenAI(base_url=BASE_URL, api_key=NVIDIA_API_KEY)
+        print("NVIDIA API client initialized successfully.")
+    except Exception as e:
+        print(f"Failed to initialize NVIDIA API client: {e}")
+        return
+
+    all_labels = sorted(['A', 'B', 'C', 'D', 'E', 'F', 'Z'])
+    print(f"Using predefined labels for classification: {all_labels}")
+
+    print(f"\nGenerating predictions for {len(test_df)} questions...")
+    predictions = []
+    # Use tqdm for a progress bar
+    for _, row in tqdm(test_df.iterrows(), total=test_df.shape[0], desc=f"Classifying with {MODEL_NAME.split('/')[0]}"):
+        prediction = get_prediction_from_nvidia_api(client, row['Question'], all_labels, MODEL_NAME)
+        predictions.append(prediction)
+    
+    test_df['Predicted_Labels'] = predictions
+    print("Prediction generation complete.")
+
+    # --- Save and Evaluate ---
+    safe_model_name = MODEL_NAME.replace('/', '_')
+    prediction_output_path = os.path.join(OUTPUT_DIR, f"prediction_subtask_1_{safe_model_name}_test.tsv")
+
+    if not os.path.exists(OUTPUT_DIR):
+        os.makedirs(OUTPUT_DIR)
+        print(f"Created output directory: {OUTPUT_DIR}")
+
+    with open(prediction_output_path, 'w', encoding='utf-8') as f:
+        f.write("\n".join(predictions))
+    print(f"Predictions saved to '{prediction_output_path}'")
+
+    print(f"\n--- Evaluation Results for {MODEL_NAME} ---")
+    evaluate_predictions(
+        test_df['True_Labels'].tolist(),
+        predictions,
+        all_labels
+    )
+
+    print("\n\n✅ Script finished successfully.")
+
+
+if __name__ == "__main__":
+    main()
