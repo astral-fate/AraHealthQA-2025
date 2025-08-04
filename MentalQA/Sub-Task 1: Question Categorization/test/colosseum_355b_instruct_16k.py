@@ -21,11 +21,11 @@ except (ImportError, KeyError):
     if NVIDIA_API_KEY:
         print("Successfully loaded NVIDIA_API_KEY from environment variable.")
 
-# --- API Configuration ---
+# --- API and Model Configuration ---
 BASE_URL = "https://integrate.api.nvidia.com/v1"
+MODEL_NAME = "igenius/colosseum_355b_instruct_16k"
 
 # --- File Paths ---
-# The script will now generate output paths based on the model name.
 TEST_DATA_PATH = '/content/drive/MyDrive/AraHealthQA/MentalQA/Task1/data/subtask1_input_test.tsv'
 TEST_LABELS_PATH = '/content/drive/MyDrive/AraHealthQA/MentalQA/Task1/data/subtask1_output_test.tsv'
 OUTPUT_DIR = '/content/drive/MyDrive/AraHealthQA/MentalQA/Task1/output/'
@@ -173,72 +173,10 @@ def evaluate_predictions(true_labels, pred_labels, all_labels):
 
 # --- Main Execution ---
 def main():
-    """Main function to run the classification and evaluation process for multiple models."""
-    print("Starting Multi-Model LLM-based Question Categorization...")
+    """Main function to run the classification and evaluation process."""
+    print(f"Starting LLM-based Question Categorization using '{MODEL_NAME}'...")
     if not NVIDIA_API_KEY:
         print("FATAL: NVIDIA_API_KEY not found. Please set it in Colab Secrets or as an environment variable.")
         return
 
-    test_df = load_and_prepare_data(TEST_DATA_PATH, TEST_LABELS_PATH)
-    if test_df is None or test_df.empty:
-        print("Halting execution due to data loading issues.")
-        return
-
-    try:
-        client = OpenAI(base_url=BASE_URL, api_key=NVIDIA_API_KEY)
-        print("NVIDIA API client initialized successfully.")
-    except Exception as e:
-        print(f"Failed to initialize NVIDIA API client: {e}")
-        return
-
-    all_labels = sorted(['A', 'B', 'C', 'D', 'E', 'F', 'Z'])
-    print(f"Using predefined labels for classification: {all_labels}")
-
-    # --- Define Models to Run ---
-    models_to_run = [
-        "igenius/colosseum_355b_instruct_16k",
-        "deepseek/deepseek-coder-v2-lite-instruct",
-        "meta/llama3-70b-instruct"
-    ]
-
-    # --- Loop Through Each Model ---
-    for model_name in models_to_run:
-        print("\n" + "="*80)
-        print(f"🚀 Starting run for model: {model_name}")
-        print("="*80 + "\n")
-
-        predictions = []
-        # Use tqdm for a progress bar for each model run
-        for _, row in tqdm(test_df.iterrows(), total=test_df.shape[0], desc=f"Classifying with {model_name.split('/')[0]}"):
-            prediction = get_prediction_from_nvidia_api(client, row['Question'], all_labels, model_name)
-            predictions.append(prediction)
-        
-        # Store predictions in a new column for this model
-        test_df[f'Predicted_Labels_{model_name.replace("/", "_")}'] = predictions
-        print("Prediction generation complete.")
-
-        # --- Save and Evaluate ---
-        # Create a model-specific filename
-        safe_model_name = model_name.replace('/', '_')
-        prediction_output_path = os.path.join(OUTPUT_DIR, f"prediction_subtask_1_{safe_model_name}_test.tsv")
-
-        if not os.path.exists(OUTPUT_DIR):
-            os.makedirs(OUTPUT_DIR)
-            print(f"Created output directory: {OUTPUT_DIR}")
-
-        with open(prediction_output_path, 'w', encoding='utf-8') as f:
-            f.write("\n".join(predictions))
-        print(f"Predictions for {model_name} saved to '{prediction_output_path}'")
-
-        print(f"\n--- Evaluation Results for {model_name} ---")
-        evaluate_predictions(
-            test_df['True_Labels'].tolist(),
-            predictions,
-            all_labels
-        )
-
-    print("\n\n✅ All models have been processed. Script finished successfully.")
-
-
-if __name__ == "__main__":
-    main()
+    test_df = load_and_prepare_data(TEST_DATA_PATH, TE
