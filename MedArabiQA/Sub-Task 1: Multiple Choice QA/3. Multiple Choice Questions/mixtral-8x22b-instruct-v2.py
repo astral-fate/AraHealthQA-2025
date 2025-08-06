@@ -22,12 +22,12 @@ client = OpenAI(
 
 # --- File Paths and Column Names ---
 INPUT_CSV = '/content/drive/MyDrive/AraHealthQA/multiple-choice-questions.csv'
-# Updated output file name for the new model
-OUTPUT_CSV = '/content/drive/MyDrive/AraHealthQA/mcq/predictions_mixtral_mcq.csv'
+# Updated output file name to reflect new functionality
+OUTPUT_CSV = '/content/drive/MyDrive/AraHealthQA/mcq/predictions_mixtral_mcq_with_accuracy.csv'
 QUESTION_COLUMN = 'Question'
+ANSWER_COLUMN = 'Answer' # Ground truth column
 
 # --- Few-Shot Examples to guide the model's output format ---
-# This format encourages the model to provide reasoning before the final answer.
 FEW_SHOT_EXAMPLES = [
     {
         "role": "user",
@@ -102,6 +102,21 @@ def extract_and_normalize_answer(full_text):
     else:
         return "Parse Error"
 
+def extract_ground_truth_letter(answer_text):
+    """
+    Extracts the first Arabic letter from the ground truth answer text.
+    Handles formats like 'أ. text' or 'أ text'.
+    """
+    if not isinstance(answer_text, str):
+        return "N/A"
+    match = re.match(r"^\s*([أ-ي])", answer_text.strip())
+    if match:
+        letter = match.group(1)
+        if letter in ['ا', 'إ', 'آ', 'أ']:
+            return 'أ'
+        return letter
+    return "N/A"
+
 def get_full_reasoning(user_prompt):
     """
     Makes a single API call to the Mixtral model and returns the entire text.
@@ -113,25 +128,21 @@ def get_full_reasoning(user_prompt):
 
     for attempt in range(max_retries):
         try:
-            # --- API Call updated for Mixtral ---
             completion = client.chat.completions.create(
               model="mistralai/mixtral-8x22b-instruct-v0.1",
               messages=messages,
               temperature=0.5,
               top_p=1,
-              max_tokens=1024, # Updated max_tokens
+              max_tokens=1024,
               stream=True
             )
-
-            print("  -> 🤖 Streaming response...")
+            print("  -> 🤖 Streaming response...", end="")
             for chunk in completion:
-                # Mixtral does not have 'reasoning_content', so we only check for 'content'
                 if chunk.choices[0].delta.content is not None:
                     print(chunk.choices[0].delta.content, end="", flush=True)
                     full_response += chunk.choices[0].delta.content
             print("\n")
             return full_response
-
         except Exception as e:
             print(f"\n  -> An error occurred (Attempt {attempt + 1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
@@ -143,8 +154,8 @@ def get_full_reasoning(user_prompt):
 
 def main():
     """
-    Main function to read questions, get full reasoning, extract the final answer,
-    and save everything to a new CSV file in Google Drive.
+    Main function to read questions, get predictions, calculate accuracy,
+    and save everything, with the ability to resume from a previous run.
     """
     output_dir = os.path.dirname(OUTPUT_CSV)
     if not os.path.exists(output_dir):
@@ -152,48 +163,90 @@ def main():
         print(f"Created output directory: {output_dir}")
 
     try:
-        df = pd.read_csv(INPUT_CSV)
-        if QUESTION_COLUMN not in df.columns:
-            print(f"Error: CSV must have a '{QUESTION_COLUMN}' column.")
+        full_df = pd.read_csv(INPUT_CSV)
+        if QUESTION_COLUMN not in full_df.columns or ANSWER_COLUMN not in full_df.columns:
+            print(f"Error: Input CSV must have '{QUESTION_COLUMN}' and '{ANSWER_COLUMN}' columns.")
             return
     except FileNotFoundError:
-        print(f"Error: '{INPUT_CSV}' not found. Ensure Drive is mounted.")
+        print(f"Error: Input CSV '{INPUT_CSV}' not found. Ensure Drive is mounted and the path is correct.")
         return
 
+    # --- Resumability Logic ---
+    existing_results_df = pd.DataFrame()
+    if os.path.exists(OUTPUT_CSV):
+        print(f"📄 Found existing results file: '{OUTPUT_CSV}'. Loading previous work.")
+        existing_results_df = pd.read_csv(OUTPUT_CSV)
+        
+        # Get list of questions already processed
+        processed_questions = existing_results_df[QUESTION_COLUMN].tolist()
+        print(f"  -> Found {len(processed_questions)} previously processed questions.")
+        
+        # Filter the main dataframe to get only the questions that need processing
+        df_to_process = full_df[~full_df[QUESTION_COLUMN].isin(processed_questions)].copy()
+        
+        if len(df_to_process) == 0:
+            print("✅ All questions have already been processed. Nothing to do.")
+            # Optional: Recalculate accuracy on existing file and exit
+            accuracy = (existing_results_df['Final_Answer_Letter'] == existing_results_df['Ground_Truth_Letter']).sum() / len(existing_results_df) * 100
+            print(f"📊 Final accuracy from existing file: {accuracy:.2f}%")
+            return
+            
+        print(f"  -> Resuming with {len(df_to_process)} remaining questions.")
+    else:
+        print("📄 No existing results file found. Starting from scratch.")
+        df_to_process = full_df.copy()
+
     print("="*50)
-    print(f"🚀 Starting prediction for {len(df)} questions from '{INPUT_CSV}' using Mixtral...")
+    print(f"🚀 Starting prediction for {len(df_to_process)} questions...")
     print("="*50)
 
     start_time = time.time()
-    full_reasoning_list = []
-    final_answer_list = []
+    new_results_list = []
 
-    for index, row in df.iterrows():
+    for index, row in df_to_process.iterrows():
         question = row[QUESTION_COLUMN]
-        print(f"Processing question {index + 1}/{len(df)}: '{str(question)[:50]}...'")
+        ground_truth_text = row[ANSWER_COLUMN]
+        
+        # Using original index from full_df for progress tracking
+        original_index = full_df.index[full_df[QUESTION_COLUMN] == question].tolist()[0]
+        print(f"Processing question {original_index + 1}/{len(full_df)}: '{str(question)[:50]}...'")
 
         full_reasoning = get_full_reasoning(question)
-        full_reasoning_list.append(full_reasoning)
+        predicted_answer = extract_and_normalize_answer(full_reasoning)
+        ground_truth_letter = extract_ground_truth_letter(ground_truth_text)
+        
+        print(f"  -> Ground Truth: {ground_truth_letter} | Predicted: {predicted_answer}")
+        
+        new_results_list.append({
+            'Question': question,
+            'Full_Model_Reasoning': full_reasoning,
+            'Ground_Truth_Letter': ground_truth_letter,
+            'Final_Answer_Letter': predicted_answer
+        })
 
-        final_answer = extract_and_normalize_answer(full_reasoning)
-        final_answer_list.append(final_answer)
-        print(f"  -> Extracted and Normalized Answer: {final_answer}")
+    # Create a DataFrame for the newly processed results
+    new_results_df = pd.DataFrame(new_results_list)
 
-    results_df = pd.DataFrame({
-        'Question': df[QUESTION_COLUMN],
-        'Full_Model_Reasoning': full_reasoning_list,
-        'Final_Answer_Letter': final_answer_list
-    })
+    # Combine the existing results with the new ones
+    final_df = pd.concat([existing_results_df, new_results_df], ignore_index=True)
 
-    results_df.to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
+    # Save the combined DataFrame
+    final_df.to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
 
+    # --- Final Calculation and Summary ---
+    correct_predictions = (final_df['Final_Answer_Letter'] == final_df['Ground_Truth_Letter']).sum()
+    total_questions = len(final_df)
+    accuracy = (correct_predictions / total_questions) * 100 if total_questions > 0 else 0
+    
     end_time = time.time()
     total_time = end_time - start_time
-
+    
     print("\n" + "="*50)
-    print(f"✅ All predictions complete.")
-    print(f"💾 Results saved to '{OUTPUT_CSV}'.")
-    print(f"⏱️ Total time taken: {total_time:.2f} seconds")
+    print(f"✅ Processing complete.")
+    if not new_results_df.empty:
+      print(f"⏱️ Time for this session: {total_time:.2f} seconds")
+    print(f"📊 Final Accuracy: {accuracy:.2f}% ({correct_predictions}/{total_questions} correct)")
+    print(f"💾 All results saved to '{OUTPUT_CSV}'.")
     print("="*50)
 
 if __name__ == "__main__":
