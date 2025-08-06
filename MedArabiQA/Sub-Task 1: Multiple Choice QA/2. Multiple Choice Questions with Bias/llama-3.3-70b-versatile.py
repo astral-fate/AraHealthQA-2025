@@ -25,7 +25,7 @@ First, provide a step-by-step thinking process. Analyze the medical question, ev
 Second, after your reasoning, you MUST provide the final answer on a new line in the format:
 Final Answer: [The single Arabic letter of the correct option]
 
-This two-step process is mandatory. Your entire response must be in Arabic.
+The valid options are only أ, ب, ج, د, or ه. Your final answer must be one of these letters. This two-step process is mandatory. Your entire response must be in Arabic.
 """
 
 FEW_SHOT_EXAMPLES = [
@@ -59,13 +59,14 @@ def generate_answer(question, client):
     """
     Generates an answer using the Groq client.
     It accumulates the streaming response and then parses it to find the final answer.
+    It now validates that the answer is one of the allowed options.
     """
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT}
     ]
     messages.extend(FEW_SHOT_EXAMPLES)
     # Add a final reminder to ensure the model adheres to the format.
-    final_instruction = "الآن، اتبع التعليمات بدقة. ابدأ بالتفكير خطوة بخطوة ثم اختتم إجابتك بـ 'Final Answer: ' متبوعًا بالحرف الصحيح فقط."
+    final_instruction = "الآن، اتبع التعليمات بدقة. ابدأ بالتفكير خطوة بخطوة ثم اختتم إجابتك بـ 'Final Answer: ' متبوعًا بالحرف الصحيح فقط (أ, ب, ج, د, أو ه)."
     prompt_with_reminder = f"{question}\n\n{final_instruction}"
     messages.append({"role": "user", "content": prompt_with_reminder})
 
@@ -87,38 +88,50 @@ def generate_answer(question, client):
             if chunk.choices[0].delta.content:
                 response_text += chunk.choices[0].delta.content
         
-        # --- Parsing Logic (remains the same) ---
+        # --- MODIFIED: Parsing Logic with Validation ---
+        
+        # NEW: Define the set of valid options
+        VALID_OPTIONS = {'أ', 'ب', 'ج', 'د', 'ه'}
 
         # Method 1: Check for the standard 'Final Answer:' format first.
-        match = re.search(r"Final Answer:\s*([\u0621-\u064A])", response_text, re.IGNORECASE)
+        # The regex now specifically looks for one of the valid letters.
+        match = re.search(r"Final Answer:\s*([أبجده])", response_text, re.IGNORECASE)
         if match:
-            return match.group(1)
+            candidate = match.group(1)
+            # This check is now inherently handled by the more specific regex
+            return candidate
 
         # Method 2: If standard format fails, try to deduce from the reasoning text.
-        print(f"  -> 'Final Answer' format not found. Attempting to parse reasoning...")
+        print(f"  -> 'Final Answer' format not found or invalid. Attempting to parse reasoning...")
 
         # Heuristic 2.1: Look for explicit conclusive phrases.
         conclusive_phrases = [
-            r"الخيار الصحيح هو\s*([\u0621-\u064A])",
-            r"الإجابة الصحيحة هي\s*([\u0621-\u064A])",
-            r"الاستنتاج هو أن الخيار\s*([\u0621-\u064A])",
-            r"الخيار\s*([\u0621-\u064A])\s*هو الصحيح",
+            r"الخيار الصحيح هو\s*([أبجده])",
+            r"الإجابة الصحيحة هي\s*([أبجده])",
+            r"الاستنتاج هو أن الخيار\s*([أبجده])",
+            r"الخيار\s*([أبجده])\s*هو الصحيح",
         ]
         for phrase in conclusive_phrases:
             match = re.search(phrase, response_text)
             if match:
+                candidate = match.group(1)
+                # This check is now inherently handled by the more specific regex
                 print(f"  -> Found answer using conclusive phrase heuristic.")
-                return match.group(1)
+                return candidate
 
-        # Heuristic 2.2: Assume the last mentioned option is the intended answer.
+        # Heuristic 2.2: Assume the last mentioned valid option is the intended answer.
+        # The regex finds any Arabic letter, but we filter it against our valid set.
         option_mentions = re.findall(r"الخيار\s*([\u0621-\u064A])", response_text)
         if option_mentions:
-            last_option = option_mentions[-1]
-            print(f"  -> Found answer using last-mentioned option heuristic: '{last_option}'")
-            return last_option
+            # Filter the list to only include valid options
+            valid_mentions = [opt for opt in option_mentions if opt in VALID_OPTIONS]
+            if valid_mentions:
+                last_valid_option = valid_mentions[-1]
+                print(f"  -> Found answer using last-mentioned valid option heuristic: '{last_valid_option}'")
+                return last_valid_option
         
         # If all parsing fails, return empty.
-        print(f"  -> Warning: Could not deduce answer from response: '{response_text}'. Recording as empty.")
+        print(f"  -> Warning: Could not deduce a valid answer from response: '{response_text}'. Recording as empty.")
         return ""
             
     except Exception as e:
