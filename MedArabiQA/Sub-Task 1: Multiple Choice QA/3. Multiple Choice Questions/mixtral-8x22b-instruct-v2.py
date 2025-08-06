@@ -102,6 +102,38 @@ def extract_and_normalize_answer(full_text):
     else:
         return "Parse Error"
 
+def extract_answer_with_compromise(full_text):
+    """
+    NEW: A lenient fallback function to find the most likely answer letter.
+    It finds the last mentioned potential answer choice in the entire text.
+    This is used when the standard parser fails.
+    """
+    # Regex to find any of the potential answer letters, case-insensitive for English
+    pattern = r"[A-Ea-eأ-ه]"
+    matches = re.findall(pattern, full_text)
+
+    if not matches:
+        return "N/A"
+
+    # Get the last matched letter as the most likely "compromise" answer
+    found_letter = matches[-1]
+
+    # Normalize the letter
+    found_letter = found_letter.upper()
+    translation_map = {'A': 'أ', 'B': 'ب', 'C': 'ج', 'D': 'د', 'E': 'ه'}
+    if found_letter in translation_map:
+        found_letter = translation_map[found_letter]
+
+    if found_letter in ['ا', 'إ', 'آ', 'أ']:
+        found_letter = 'أ'
+
+    if found_letter in ['أ', 'ب', 'ج', 'د', 'ه']:
+        return found_letter
+    else:
+        # This case should be rare given the regex, but as a safeguard:
+        return "Parse Error"
+
+
 def extract_ground_truth_letter(answer_text):
     """
     Extracts the first Arabic letter from the ground truth answer text.
@@ -155,7 +187,7 @@ def get_full_reasoning(user_prompt):
 def main():
     """
     Main function to read questions, get predictions, calculate accuracy,
-    and save everything, with the ability to resume from a previous run.
+    and save everything, with the ability to resume and re-process errors.
     """
     output_dir = os.path.dirname(OUTPUT_CSV)
     if not os.path.exists(output_dir):
@@ -173,81 +205,122 @@ def main():
 
     # --- Resumability Logic ---
     existing_results_df = pd.DataFrame()
+    df_to_process = pd.DataFrame()
     if os.path.exists(OUTPUT_CSV):
         print(f"📄 Found existing results file: '{OUTPUT_CSV}'. Loading previous work.")
         existing_results_df = pd.read_csv(OUTPUT_CSV)
-        
-        # Get list of questions already processed
-        processed_questions = existing_results_df[QUESTION_COLUMN].tolist()
-        print(f"  -> Found {len(processed_questions)} previously processed questions.")
-        
-        # Filter the main dataframe to get only the questions that need processing
-        df_to_process = full_df[~full_df[QUESTION_COLUMN].isin(processed_questions)].copy()
-        
-        if len(df_to_process) == 0:
-            print("✅ All questions have already been processed. Nothing to do.")
-            # Optional: Recalculate accuracy on existing file and exit
-            accuracy = (existing_results_df['Final_Answer_Letter'] == existing_results_df['Ground_Truth_Letter']).sum() / len(existing_results_df) * 100
-            print(f"📊 Final accuracy from existing file: {accuracy:.2f}%")
-            return
-            
-        print(f"  -> Resuming with {len(df_to_process)} remaining questions.")
+
+        # --- MODIFIED CHECK ---
+        # Now checks for 'Ground_Truth_Letter' instead of 'Answer' in the existing file.
+        required_cols = [QUESTION_COLUMN, 'Ground_Truth_Letter', 'Final_Answer_Letter']
+        if not all(col in existing_results_df.columns for col in required_cols):
+             print("  -> Existing CSV is missing 'Question', 'Ground_Truth_Letter', or 'Final_Answer_Letter'. Starting from scratch.")
+             existing_results_df = pd.DataFrame() # Reset to start fresh
+             df_to_process = full_df.copy()
+        else:
+            processed_questions = existing_results_df[QUESTION_COLUMN].tolist()
+            print(f"  -> Found {len(processed_questions)} previously processed questions.")
+            df_to_process = full_df[~full_df[QUESTION_COLUMN].isin(processed_questions)].copy()
+
+            if len(df_to_process) == 0:
+                print("✅ All questions have already been processed.")
+            else:
+                 print(f"  -> Resuming with {len(df_to_process)} remaining questions.")
     else:
         print("📄 No existing results file found. Starting from scratch.")
         df_to_process = full_df.copy()
 
-    print("="*50)
-    print(f"🚀 Starting prediction for {len(df_to_process)} questions...")
-    print("="*50)
-
-    start_time = time.time()
+    # --- Initial Processing ---
     new_results_list = []
+    if not df_to_process.empty:
+        print("="*50)
+        print(f"🚀 Starting prediction for {len(df_to_process)} questions...")
+        print("="*50)
+        start_time = time.time()
 
-    for index, row in df_to_process.iterrows():
-        question = row[QUESTION_COLUMN]
-        ground_truth_text = row[ANSWER_COLUMN]
-        
-        # Using original index from full_df for progress tracking
-        original_index = full_df.index[full_df[QUESTION_COLUMN] == question].tolist()[0]
-        print(f"Processing question {original_index + 1}/{len(full_df)}: '{str(question)[:50]}...'")
+        for index, row in df_to_process.iterrows():
+            question = row[QUESTION_COLUMN]
+            ground_truth_text = row[ANSWER_COLUMN]
+            
+            original_index = full_df.index[full_df[QUESTION_COLUMN] == question].tolist()[0]
+            print(f"Processing question {original_index + 1}/{len(full_df)}: '{str(question)[:50]}...'")
 
-        full_reasoning = get_full_reasoning(question)
-        predicted_answer = extract_and_normalize_answer(full_reasoning)
-        ground_truth_letter = extract_ground_truth_letter(ground_truth_text)
-        
-        print(f"  -> Ground Truth: {ground_truth_letter} | Predicted: {predicted_answer}")
-        
-        new_results_list.append({
-            'Question': question,
-            'Full_Model_Reasoning': full_reasoning,
-            'Ground_Truth_Letter': ground_truth_letter,
-            'Final_Answer_Letter': predicted_answer
-        })
+            full_reasoning = get_full_reasoning(question)
+            predicted_answer = extract_and_normalize_answer(full_reasoning)
+            ground_truth_letter = extract_ground_truth_letter(ground_truth_text)
+            
+            print(f"  -> Ground Truth: {ground_truth_letter} | Predicted: {predicted_answer}")
+            
+            new_results_list.append({
+                'Question': question,
+                'Answer': ground_truth_text, # Still needed for newly created rows
+                'Full_Model_Reasoning': full_reasoning,
+                'Ground_Truth_Letter': ground_truth_letter,
+                'Final_Answer_Letter': predicted_answer
+            })
+        end_time = time.time()
+        print(f"⏱️ Initial processing time: {end_time - start_time:.2f} seconds")
 
-    # Create a DataFrame for the newly processed results
+    # --- Combine and Save Intermediate Results ---
     new_results_df = pd.DataFrame(new_results_list)
-
-    # Combine the existing results with the new ones
     final_df = pd.concat([existing_results_df, new_results_df], ignore_index=True)
 
-    # Save the combined DataFrame
-    final_df.to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
+    # --- Re-processing Logic for Parse Errors and N/A ---
+    df_to_retry = final_df[final_df['Final_Answer_Letter'].isin(['Parse Error', 'N/A'])].copy()
+
+    if not df_to_retry.empty:
+        print("\n" + "="*50)
+        print(f"🕵️ Found {len(df_to_retry)} questions with parsing errors. Re-attempting...")
+        print("="*50)
+        retry_start_time = time.time()
+
+        for index, row in df_to_retry.iterrows():
+            question = row[QUESTION_COLUMN]
+            print(f"Re-processing question for index {index}: '{str(question)[:50]}...'")
+
+            full_reasoning = get_full_reasoning(question)
+            predicted_answer = extract_and_normalize_answer(full_reasoning)
+            
+            if predicted_answer in ['Parse Error', 'N/A']:
+                print("  -> Standard parsing failed again. Trying compromise method...")
+                predicted_answer = extract_answer_with_compromise(full_reasoning)
+
+            print(f"  -> Re-attempted Prediction: {predicted_answer}")
+
+            # Update the DataFrame at the specific index
+            final_df.loc[index, 'Full_Model_Reasoning'] = full_reasoning
+            final_df.loc[index, 'Final_Answer_Letter'] = predicted_answer
+        retry_end_time = time.time()
+        print(f"⏱️ Re-processing time: {retry_end_time - retry_start_time:.2f} seconds")
+
+    else:
+        print("\n✅ No parsing errors found to re-attempt.")
 
     # --- Final Calculation and Summary ---
-    correct_predictions = (final_df['Final_Answer_Letter'] == final_df['Ground_Truth_Letter']).sum()
-    total_questions = len(final_df)
-    accuracy = (correct_predictions / total_questions) * 100 if total_questions > 0 else 0
-    
-    end_time = time.time()
-    total_time = end_time - start_time
-    
-    print("\n" + "="*50)
-    print(f"✅ Processing complete.")
-    if not new_results_df.empty:
-      print(f"⏱️ Time for this session: {total_time:.2f} seconds")
-    print(f"📊 Final Accuracy: {accuracy:.2f}% ({correct_predictions}/{total_questions} correct)")
-    print(f"💾 All results saved to '{OUTPUT_CSV}'.")
-    print("="*50)
+    if not final_df.empty:
+        # If the 'Answer' column got lost for some rows during concat, merge it back.
+        if 'Answer' not in final_df.columns or final_df['Answer'].isnull().any():
+             # Drop 'Answer' if it exists but is incomplete, to avoid merge conflicts
+             if 'Answer' in final_df.columns:
+                 final_df = final_df.drop(columns=['Answer'])
+             final_df = pd.merge(final_df, full_df[[QUESTION_COLUMN, ANSWER_COLUMN]], on=QUESTION_COLUMN, how='left')
+        
+        # Reorder columns for clarity
+        cols_order = ['Question', 'Answer', 'Ground_Truth_Letter', 'Final_Answer_Letter', 'Full_Model_Reasoning']
+        # Filter for columns that actually exist in the dataframe before reordering
+        final_df = final_df[[col for col in cols_order if col in final_df.columns]]
+        
+        final_df.to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
+
+        correct_predictions = (final_df['Final_Answer_Letter'] == final_df['Ground_Truth_Letter']).sum()
+        total_questions = len(final_df)
+        accuracy = (correct_predictions / total_questions) * 100 if total_questions > 0 else 0
+        
+        print("\n" + "="*50)
+        print(f"✅ Processing complete.")
+        print(f"📊 Final Accuracy: {accuracy:.2f}% ({correct_predictions}/{total_questions} correct)")
+        print(f"💾 All results saved to '{OUTPUT_CSV}'.")
+        print("="*50)
 
 if __name__ == "__main__":
     main()
