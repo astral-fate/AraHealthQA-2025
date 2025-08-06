@@ -1,24 +1,28 @@
+# pip install bitsandbytes 
+
 import os
 import re
 import pandas as pd
 import time
-from getpass import getpass
-from sklearn.metrics import accuracy_score
 import gc
 
 # --- Import necessary libraries for local inference ---
 try:
-    from transformers import pipeline, BitsAndBytesConfig
+    from transformers import pipeline, BitsAndBytesConfig, AutoTokenizer
     import torch
+    from huggingface_hub import login
+    # Import the userdata module for Google Colab secrets
+    from google.colab import userdata
+    from sklearn.metrics import accuracy_score
 except ImportError:
-    print("Please install necessary libraries: pip install transformers torch accelerate bitsandbytes")
+    print("Please install necessary libraries: pip install transformers torch accelerate bitsandbytes scikit-learn huggingface_hub pandas")
     exit()
 
 
 # --- File paths and column names ---
 INPUT_CSV = '/content/drive/MyDrive/AraHealthQA/t2t1/data/fill-in-the-blank-choices.csv'
 # Changed output file name for the new model
-OUTPUT_CSV = '/content/drive/MyDrive/AraHealthQA/t2t1/final_result/predictions_fitb_choices_OpenBioLLM.csv'
+OUTPUT_CSV = '/content/drive/MyDrive/AraHealthQA/t2t1/final_result/predictions_fitb_choices_OpenBioLLM_fixed.csv'
 
 # --- Column names ---
 QUESTION_COLUMN = 'Question - Arabic'
@@ -64,8 +68,9 @@ def generate_answer(question, pipe):
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT}
     ]
-    # The FEW_SHOT_EXAMPLES are not used here as we are now using a different prompting strategy
-    # If the model struggles, we can add them back. For now, let's follow the user's snippet structure.
+    # The FEW_SHOT_EXAMPLES are defined but not used in the message list.
+    # To use them, you would uncomment the following line:
+    # messages.extend(FEW_SHOT_EXAMPLES)
     messages.append({"role": "user", "content": question})
 
     try:
@@ -81,18 +86,19 @@ def generate_answer(question, pipe):
             pipe.tokenizer.eos_token_id,
             pipe.tokenizer.convert_tokens_to_ids("<|eot_id|>")
         ]
-        
+
         # Generate the text
         outputs = pipe(
             prompt,
             max_new_tokens=1024, # Increased for detailed reasoning
             eos_token_id=terminators,
             do_sample=False, # Use False for deterministic, exam-like answers
+            pad_token_id=pipe.tokenizer.eos_token_id # Suppress warning
         )
-        
+
         # Extract only the newly generated text
         response_text = outputs[0]["generated_text"][len(prompt):].strip()
-        
+
         # --- Intelligent Parsing Logic ---
         # Method 1: Check for the standard 'Final Answer:' format first.
         match = re.search(r"Final Answer:\s*([\u0621-\u064A])", response_text, re.IGNORECASE)
@@ -101,7 +107,7 @@ def generate_answer(question, pipe):
 
         # Method 2: If standard format fails, parse the reasoning text.
         print(f"  -> 'Final Answer' format not found. Attempting to parse reasoning...")
-        
+
         # Heuristic 2.1: Look for explicit conclusive phrases.
         conclusive_phrases = [
             r"الخيار الصحيح هو\s*([\u0621-\u064A])",
@@ -121,10 +127,10 @@ def generate_answer(question, pipe):
             last_option = option_mentions[-1]
             print(f"  -> Found answer using last-mentioned option heuristic: '{last_option}'")
             return last_option
-        
+
         print(f"  -> Warning: Could not deduce answer from response: '{response_text}'. Recording as empty.")
         return ""
-            
+
     except Exception as e:
         print(f"  -> An error occurred during model inference: {e}")
         return "INFERENCE_ERROR"
@@ -139,7 +145,7 @@ def evaluate_mcq_accuracy(predictions, ground_truths):
     print("\n" + "="*50)
     print("🚀 Starting Evaluation...")
     print("="*50)
-    
+
     error_codes = ["INFERENCE_ERROR", ""]
     valid_indices = [i for i, p in enumerate(predictions) if p not in error_codes]
     valid_predictions = [predictions[i] for i in valid_indices]
@@ -161,7 +167,7 @@ def evaluate_mcq_accuracy(predictions, ground_truths):
 
     accuracy = accuracy_score(normalized_ground_truths, normalized_predictions)
     correct_predictions = sum(p == g for p, g in zip(normalized_ground_truths, normalized_predictions))
-    
+
     total_valid_predictions = len(valid_predictions)
     total_questions = len(ground_truths)
     failed_or_empty = total_questions - total_valid_predictions
@@ -188,44 +194,81 @@ def main():
 
     df.dropna(subset=[QUESTION_COLUMN, ANSWER_COLUMN], inplace=True)
     df.reset_index(drop=True, inplace=True)
-    
+
     if os.path.exists(OUTPUT_CSV):
         print(f"Output file '{OUTPUT_CSV}' already exists. Please remove it or rename it to run a new generation.")
         return
-        
+
     # --- Model Loading ---
     print("="*50)
-    print("🚀 Initializing local model: aaditya/OpenBioLLM-Llama3-8B")
+    print("🚀 Initializing local model: aaditya/Llama3-OpenBioLLM-8B")
     print("This may take a few minutes...")
     print("="*50)
-    
+
     if not torch.cuda.is_available():
         print("❌ CUDA is not available. A GPU is required for this model.")
         return
-    
+
     try:
-        print("Clearing GPU cache before model loading...")
+        # Login to Hugging Face Hub to download the model
+        # Make sure to set the 'HF_TOKEN' secret in your Colab environment
+        hf_token = userdata.get('HF_TOKEN')
+        if not hf_token:
+            print("HF_TOKEN secret not found. Attempting to proceed without login.")
+        else:
+            login(token=hf_token)
+            print("✅ Successfully logged into Hugging Face Hub.")
+
+        # Define the correct model ID
+        model_id = "aaditya/Llama3-OpenBioLLM-8B"
+
+        # Load tokenizer and explicitly set the chat template for Llama 3
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
+        llama3_template = (
+            "{% if messages[0]['role'] == 'system' %}"
+            "{{ bos_token + '<|start_header_id|>system<|end_header_id|>\n\n' + messages[0]['content'] + '<|eot_id|>' }}"
+            "{% endif %}"
+            "{% for message in messages %}"
+            "{% if message['role'] == 'user' %}"
+            "{{ bos_token + '<|start_header_id|>user<|end_header_id|>\n\n' + message['content'] + '<|eot_id|>' }}"
+            "{% elif message['role'] == 'assistant' %}"
+            "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' + message['content'] + '<|eot_id|>' }}"
+            "{% endif %}"
+            "{% endfor %}"
+            "{% if add_generation_prompt %}"
+            "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"
+            "{% endif %}"
+        )
+        tokenizer.chat_template = llama3_template
+
+        # Clear GPU cache and set up 4-bit quantization
         gc.collect()
         torch.cuda.empty_cache()
-        
-        # Proactively use 4-bit quantization for memory safety
         quantization_config = BitsAndBytesConfig(
             load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
         )
-        
-        model_id = "aaditya/OpenBioLLM-Llama3-8B"
+
+        # Create the transformers pipeline with the correct tokenizer and model settings
         pipe = pipeline(
             "text-generation",
             model=model_id,
-            model_kwargs={"quantization_config": quantization_config}
+            tokenizer=tokenizer,  # Pass the configured tokenizer
+            model_kwargs={
+                "quantization_config": quantization_config,
+                "device_map": "auto"
+            }
         )
+
     except Exception as e:
         print(f"❌ Failed to load the model. Error: {e}")
+        print("Please ensure you have set 'HF_TOKEN' in Colab secrets and that the runtime has a GPU.")
         return
 
     print("✅ Model loaded successfully.")
-    
+
     # --- Prediction Generation ---
     predictions = []
     total_questions = len(df)
@@ -236,7 +279,7 @@ def main():
         print(f"Processing question {index + 1}/{total_questions}...")
         answer_letter = generate_answer(question, pipe)
         predictions.append(answer_letter)
-        
+
         ground_truth_letter = str(row[ANSWER_COLUMN]).strip()[0] if str(row[ANSWER_COLUMN]).strip() else "N/A"
         print(f"  -> Ground Truth: {ground_truth_letter} | Model's Predicted Letter: {answer_letter}")
 
