@@ -18,12 +18,10 @@ OUTPUT_CSV = '/content/drive/MyDrive/AraHealthQA/t2t1/data/predictions_fill-in-t
 # --- Column names (Set for your data) ---
 QUESTION_COLUMN = 'Question - Arabic'
 ANSWER_COLUMN = 'Answer - Arabic'
-# --- NEW: Added a column name for our predictions to manage state ---
 PREDICTED_COLUMN = 'Predicted_Answer'
 
 
 # --- Chain of Thought & Few-Shot Prompting Configuration ---
-# This system prompt is now in Arabic to guide the model more effectively.
 SYSTEM_PROMPT = """أنت خبير طبي ومساعد امتحانات دقيق. مهمتك هي حل سؤال متعدد الخيارات باللغة العربية.
 أولاً، ستقوم بعملية تفكير خطوة بخطوة. قم بتحليل السؤال الطبي، وتقييم كل خيار (أ, ب, ج, د, هـ)، وشرح أسباب اختيارك للإجابة الصحيحة.
 ثانياً، بعد شرح أسبابك، يجب عليك تقديم الإجابة النهائية في سطر جديد بالتنسيق التالي:
@@ -90,19 +88,49 @@ def generate_answer(question, pipeline):
             prompt,
             max_new_tokens=1024,
             eos_token_id=terminators,
-            do_sample=False, # Use greedy decoding for more deterministic results
+            do_sample=False,
         )
 
         # Extract the generated text after the prompt
         response_text = outputs[0]["generated_text"][len(prompt):]
 
-        # --- Parsing Logic ---
-        # 1. Primary method: Look for the Arabic format
+        # --- NEW: Robust Multi-Layer Parsing Logic ---
+        translation_map = {'A': 'أ', 'B': 'ب', 'C': 'ج', 'D': 'د', 'E': 'ه'}
+
+        # Layer 1: Check for the ideal "Final Answer: [Letter]" format (Arabic or English)
         match = re.search(r"Final Answer:\s*([\u0621-\u064A])", response_text, re.IGNORECASE)
         if match:
-            return match.group(1)
+            print("  -> Found answer using 'Final Answer: [Arabic Letter]' format.")
+            return match.group(1).strip()
+        
+        match = re.search(r"Final Answer:\s*([A-E])", response_text, re.IGNORECASE)
+        if match:
+            english_letter = match.group(1).upper()
+            arabic_letter = translation_map.get(english_letter)
+            print(f"  -> Found answer using 'Final Answer: [English Letter]' format ('{english_letter}'), translated to '{arabic_letter}'.")
+            return arabic_letter
 
-        # 2. Heuristic method: Look for Arabic conclusive phrases
+        # Layer 2: Flexible check for English phrases like "The answer is A)" or "The correct answer is 'B'."
+        flexible_english_phrases = [
+            r"(?:The correct answer is|The answer is|The final answer is)\s*['\"]?([A-E])['\"]?[\)\.]?",
+            r"Option\s+([A-E])\s+is the correct answer"
+        ]
+        for phrase_regex in flexible_english_phrases:
+            match = re.search(phrase_regex, response_text, re.IGNORECASE)
+            if match:
+                english_letter = match.group(1).upper()
+                arabic_letter = translation_map.get(english_letter)
+                print(f"  -> Found answer using flexible English phrase heuristic ('{english_letter}'), translated to '{arabic_letter}'.")
+                return arabic_letter
+
+        # Layer 3: Flexible check for hybrid phrases like "The correct answer is أ"
+        match = re.search(r"(?:The correct answer is|The answer is)\s*['\"]?([\u0621-\u064A])['\"]?", response_text, re.IGNORECASE)
+        if match:
+            arabic_letter = match.group(1).strip()
+            print(f"  -> Found answer using hybrid English phrase with Arabic letter heuristic: '{arabic_letter}'.")
+            return arabic_letter
+
+        # Layer 4: Check for standard Arabic conclusive phrases
         conclusive_phrases = [
             r"الخيار الصحيح هو\s*([\u0621-\u064A])", r"الإجابة الصحيحة هي\s*([\u0621-\u064A])",
             r"الاستنتاج هو أن الخيار\s*([\u0621-\u064A])", r"الخيار\s*([\u0621-\u064A])\s*هو الصحيح",
@@ -111,27 +139,15 @@ def generate_answer(question, pipeline):
             match = re.search(phrase, response_text)
             if match:
                 print(f"  -> Found answer using Arabic conclusive phrase heuristic.")
-                return match.group(1)
+                return match.group(1).strip()
 
-        # 3. Fallback method: Look for English letters and translate them
-        english_match = re.search(r"The correct answer is\s+([A-E])", response_text, re.IGNORECASE)
-        if not english_match:
-            english_match = re.search(r"Final Answer:\s*([A-E])", response_text, re.IGNORECASE)
-
-        if english_match:
-            english_letter = english_match.group(1).upper()
-            translation_map = {'A': 'أ', 'B': 'ب', 'C': 'ج', 'D': 'د', 'E': 'ه'}
-            arabic_letter = translation_map.get(english_letter)
-            if arabic_letter:
-                print(f"  -> Found English letter '{english_letter}', translated to '{arabic_letter}'.")
-                return arabic_letter
-
-        # 4. Last resort: Look for any mentioned Arabic letter
-        option_mentions = re.findall(r"الخيار\s*([\u0621-\u064A])", response_text)
+        # Layer 5: Last resort - Find the last standalone English option letter mentioned
+        option_mentions = re.findall(r"\b([A-E])[\)\.]?\b", response_text)
         if option_mentions:
-            last_option = option_mentions[-1]
-            print(f"  -> Found answer using last-mentioned option heuristic: '{last_option}'")
-            return last_option
+            last_english_letter = option_mentions[-1].upper()
+            arabic_letter = translation_map.get(last_english_letter)
+            print(f"  -> Found answer using last-mentioned English letter fallback ('{last_english_letter}'), translated to '{arabic_letter}'.")
+            return arabic_letter
 
         # If all parsing fails, return an empty string
         print(f"  -> Warning: Could not deduce answer from response: '{response_text}'. Recording as empty.")
@@ -158,16 +174,12 @@ def evaluate_mcq_accuracy(predictions, ground_truths):
         print("No valid predictions to evaluate. Check for widespread inference or parsing errors.")
         return
 
-    # Helper function to normalize different forms of Alif
     def normalize_alif(letter):
-        # Replaces hamza forms (أ, إ, آ) with the plain Alif (ا)
         return str(letter).replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
 
-    # Normalize both predictions and ground truths before comparison
     normalized_predictions = [normalize_alif(p) for p in valid_predictions]
     normalized_ground_truths = [normalize_alif(g) for g in valid_ground_truths]
 
-    # Calculate accuracy using the normalized lists
     accuracy = accuracy_score(normalized_ground_truths, normalized_predictions)
     correct_predictions = int(accuracy * len(normalized_predictions))
     total_valid_predictions = len(valid_predictions)
@@ -186,31 +198,26 @@ def evaluate_mcq_accuracy(predictions, ground_truths):
 # --- Main Execution Logic ---
 def main():
     """Main function to run the prediction and evaluation process."""
-    # --- Login to Hugging Face and initialize the local model pipeline ---
     try:
-        # Login to Hugging Face Hub to download the model
         hf_token = userdata.get('HF_TOKEN')
         login(token=hf_token)
         print("✅ Successfully logged into Hugging Face Hub.")
 
-        # Define the model ID
         model_id = "aaditya/Llama3-OpenBioLLM-8B"
         print(f"🚀 Initializing local model pipeline: {model_id}")
 
-        # Explicitly set device to cuda if available, otherwise cpu
         device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"Device set to use {device}")
 
-        # Load the tokenizer and set the chat template manually
         tokenizer = AutoTokenizer.from_pretrained(model_id)
 
-        # This is the standard Llama 3 chat template
+        # --- FIX: Manually set the Llama 3 chat template ---
+        # This template is required for the apply_chat_template function to work correctly.
         llama3_template = (
-            "{% if messages[0]['role'] == 'system' %}"
-            "{{ bos_token + '<|start_header_id|>system<|end_header_id|>\n\n' + messages[0]['content'] + '<|eot_id|>' }}"
-            "{% endif %}"
             "{% for message in messages %}"
-            "{% if message['role'] == 'user' %}"
+            "{% if message['role'] == 'system' %}"
+            "{{ bos_token + '<|start_header_id|>system<|end_header_id|>\n\n' + message['content'] + '<|eot_id|>' }}"
+            "{% elif message['role'] == 'user' %}"
             "{{ bos_token + '<|start_header_id|>user<|end_header_id|>\n\n' + message['content'] + '<|eot_id|>' }}"
             "{% elif message['role'] == 'assistant' %}"
             "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' + message['content'] + '<|eot_id|>' }}"
@@ -220,13 +227,14 @@ def main():
             "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"
             "{% endif %}"
         )
-        tokenizer.chat_template = llama3_template
+        if tokenizer.chat_template is None:
+            print("  -> Tokenizer chat template not set. Applying Llama 3 template.")
+            tokenizer.chat_template = llama3_template
 
-        # Create the transformers pipeline
         pipeline = transformers.pipeline(
             "text-generation",
             model=model_id,
-            tokenizer=tokenizer, # Pass the updated tokenizer
+            tokenizer=tokenizer,
             model_kwargs={"torch_dtype": torch.bfloat16},
             device=device,
         )
@@ -237,7 +245,6 @@ def main():
         return
 
     # --- Load and Prepare Data ---
-    # Load from output file if it exists to resume, otherwise start from input
     if os.path.exists(OUTPUT_CSV):
         print(f"✅ Found existing predictions file: '{OUTPUT_CSV}'. Loading to resume.")
         try:
@@ -249,26 +256,22 @@ def main():
         print(f"No existing output file found. Loading from input: '{INPUT_CSV}'.")
         try:
             df = pd.read_csv(INPUT_CSV, encoding='utf-8')
+            df[PREDICTED_COLUMN] = ""
         except FileNotFoundError:
             print(f"Error: The input file '{INPUT_CSV}' was not found. Please check the path.")
             return
         except Exception as e:
             print(f"An error occurred while reading the input CSV: {e}")
             return
-        # Add the prediction column for the first run
-        df[PREDICTED_COLUMN] = ""
 
-
-    # --- Logic to Run Predictions (Full or Rerun) ---
+    # --- Logic to Run Predictions ---
     df.dropna(subset=[QUESTION_COLUMN, ANSWER_COLUMN], inplace=True)
     df.reset_index(drop=True, inplace=True)
 
-    # Ensure the prediction column exists and fill NaNs with empty strings for processing
     if PREDICTED_COLUMN not in df.columns:
         df[PREDICTED_COLUMN] = ""
     df[PREDICTED_COLUMN] = df[PREDICTED_COLUMN].fillna("")
 
-    # Identify questions that need a prediction
     error_codes_to_rerun = ["INFERENCE_ERROR", ""]
     indices_to_run = df[df[PREDICTED_COLUMN].isin(error_codes_to_rerun)].index
 
@@ -283,23 +286,19 @@ def main():
             print(f"Processing question {i + 1}/{len(indices_to_run)} (Overall index: {index})...")
             
             predicted_answer = ""
-            # Add retry logic
-            for attempt in range(2): # Try up to 2 times
+            for attempt in range(2):
                 print(f"  Attempt {attempt + 1}...")
                 predicted_answer = generate_answer(question, pipeline)
                 if predicted_answer and predicted_answer != "INFERENCE_ERROR":
-                    break # Got a valid answer, no need to retry
-                if attempt == 0: # Only print retry message on the first failure
+                    break
+                if attempt == 0:
                     print(f"  -> Attempt 1 failed. Retrying...")
             
-            # Update the DataFrame with the new prediction
             df.loc[index, PREDICTED_COLUMN] = predicted_answer
             
             ground_truth_letter = str(df.loc[index, ANSWER_COLUMN]).strip()[0]
             print(f"  -> Ground Truth: {ground_truth_letter} | Final Predicted Letter: {predicted_answer}")
             
-            # Save the updated DataFrame to the output file after each prediction
-            # This makes the process resumable in case of interruption
             df.to_csv(OUTPUT_CSV, index=False, encoding='utf-8')
 
         end_time = time.time()
@@ -312,9 +311,7 @@ def main():
         print(f"Successfully saved all predictions to '{OUTPUT_CSV}'.")
         print("="*50)
 
-
     # --- Final Evaluation ---
-    # Convert columns to lists for the evaluation function
     predictions = df[PREDICTED_COLUMN].tolist()
     ground_truths = [str(ans).strip()[0] if pd.notna(ans) and str(ans).strip() else "INVALID_TRUTH" for ans in df[ANSWER_COLUMN].tolist()]
     
