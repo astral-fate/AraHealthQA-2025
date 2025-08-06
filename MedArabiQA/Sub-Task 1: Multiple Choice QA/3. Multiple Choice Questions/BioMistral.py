@@ -1,6 +1,6 @@
 # --- Step 1: Install all necessary libraries ---
 # This needs to be run once to install the required packages for the model.
-!pip install -q -U transformers bitsandbytes accelerate Pillow
+# !pip install -q -U transformers bitsandbytes accelerate Pillow
 
 # --- Step 2: Import libraries ---
 import os
@@ -31,9 +31,10 @@ except Exception as e:
 
 # --- Step 4: File Paths and Column Names ---
 INPUT_CSV = '/content/drive/MyDrive/AraHealthQA/multiple-choice-questions.csv'
-# Updated output file name for the BioMistral model
-OUTPUT_CSV = '/content/drive/MyDrive/AraHealthQA/mcq/predictions_biomistral_mcq.csv'
+# Updated output file name for the BioMistral model with new functionality
+OUTPUT_CSV = '/content/drive/MyDrive/AraHealthQA/mcq/predictions_biomistral_mcq_with_accuracy.csv'
 QUESTION_COLUMN = 'Question'
+ANSWER_COLUMN = 'Answer' # Ground truth column - THIS IS NOW REQUIRED IN YOUR INPUT CSV
 
 # --- Step 5: Prepare Few-Shot Examples for BioMistral ---
 # The message format uses a standard chat structure.
@@ -105,24 +106,33 @@ def extract_and_normalize_answer(full_text):
     else:
         return "Parse Error"
 
+def extract_ground_truth_letter(answer_text):
+    """
+    NEW: Extracts the first Arabic letter from the ground truth answer text
+    to be used for accuracy calculation.
+    """
+    if not isinstance(answer_text, str):
+        return "N/A"
+    match = re.match(r"^\s*([أ-ي])", answer_text.strip())
+    if match:
+        letter = match.group(1)
+        if letter in ['ا', 'إ', 'آ', 'أ']:
+            return 'أ'
+        return letter
+    return "N/A"
+
 def get_full_reasoning(user_prompt):
     """
     Uses the local BioMistral model to get its reasoning.
     """
-    # Combine the few-shot examples with the current question
     messages = FEW_SHOT_MESSAGES + [{"role": "user", "content": user_prompt}]
-
+    print("  -> 🤖 Generating response from BioMistral...")
     try:
-        # Apply the chat template to format the input correctly
         prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-
-        # Generate the response
         outputs = model.generate(**inputs, max_new_tokens=1024, do_sample=False, pad_token_id=tokenizer.eos_token_id)
-        
-        # Decode the generated tokens, skipping the prompt
         response_text = tokenizer.decode(outputs[0, inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
-        print(response_text) # Print the full response for real-time viewing
+        print(f"  -> Raw response: {response_text[:100]}...") # Print a snippet
         return response_text
     except Exception as e:
         error_message = f"An error occurred during model inference: {e}"
@@ -131,7 +141,8 @@ def get_full_reasoning(user_prompt):
 
 def main():
     """
-    Main function to process the CSV file with the BioMistral model.
+    Main function to process the CSV file with BioMistral, including resumability,
+    re-attempts for failed answers, and final accuracy calculation.
     """
     output_dir = os.path.dirname(OUTPUT_CSV)
     if not os.path.exists(output_dir):
@@ -139,49 +150,106 @@ def main():
         print(f"Created output directory: {output_dir}")
 
     try:
-        df = pd.read_csv(INPUT_CSV)
-        if QUESTION_COLUMN not in df.columns:
-            print(f"Error: CSV must have a '{QUESTION_COLUMN}' column.")
+        full_df = pd.read_csv(INPUT_CSV)
+        if QUESTION_COLUMN not in full_df.columns or ANSWER_COLUMN not in full_df.columns:
+            print(f"Error: Input CSV must have '{QUESTION_COLUMN}' and '{ANSWER_COLUMN}' columns.")
             return
     except FileNotFoundError:
-        print(f"Error: '{INPUT_CSV}' not found. Ensure Drive is mounted.")
+        print(f"Error: Input CSV '{INPUT_CSV}' not found. Ensure Drive is mounted and the path is correct.")
         return
 
-    print("="*50)
-    print(f"🚀 Starting prediction for {len(df)} questions from '{INPUT_CSV}' using BioMistral...")
-    print("="*50)
+    # --- Resumability Logic ---
+    existing_results_df = pd.DataFrame()
+    if os.path.exists(OUTPUT_CSV):
+        print(f"📄 Found existing results file: '{OUTPUT_CSV}'. Loading previous work.")
+        existing_results_df = pd.read_csv(OUTPUT_CSV)
+        processed_questions = existing_results_df[QUESTION_COLUMN].tolist()
+        print(f"  -> Found {len(processed_questions)} previously processed questions.")
+        df_to_process = full_df[~full_df[QUESTION_COLUMN].isin(processed_questions)].copy()
+        if not df_to_process.empty:
+            print(f"  -> Resuming with {len(df_to_process)} remaining questions.")
+        else:
+            print("  -> All questions seem to be processed. Checking for failures to re-attempt.")
+    else:
+        print("📄 No existing results file found. Starting from scratch.")
+        df_to_process = full_df.copy()
 
-    start_time = time.time()
-    full_reasoning_list = []
-    final_answer_list = []
+    # --- Initial Processing of New Questions ---
+    new_results_list = []
+    if not df_to_process.empty:
+        print("="*50)
+        print(f"🚀 Starting prediction for {len(df_to_process)} new questions...")
+        print("="*50)
+        start_time = time.time()
+        for index, row in df_to_process.iterrows():
+            question = row[QUESTION_COLUMN]
+            ground_truth_text = row[ANSWER_COLUMN]
+            original_index = full_df.index[full_df[QUESTION_COLUMN] == question].tolist()[0]
+            print(f"Processing question {original_index + 1}/{len(full_df)}: '{str(question)[:50]}...'")
 
-    for index, row in df.iterrows():
-        question = row[QUESTION_COLUMN]
-        print(f"Processing question {index + 1}/{len(df)}: '{str(question)[:50]}...'")
+            full_reasoning = get_full_reasoning(question)
+            predicted_answer = extract_and_normalize_answer(full_reasoning)
+            ground_truth_letter = extract_ground_truth_letter(ground_truth_text)
+            print(f"  -> Ground Truth: {ground_truth_letter} | Predicted: {predicted_answer}\n")
 
-        full_reasoning = get_full_reasoning(question)
-        full_reasoning_list.append(full_reasoning)
+            new_results_list.append({
+                'Question': question,
+                'Answer': ground_truth_text,
+                'Full_Model_Reasoning': full_reasoning,
+                'Ground_Truth_Letter': ground_truth_letter,
+                'Final_Answer_Letter': predicted_answer
+            })
+        end_time = time.time()
+        print(f"⏱️ New question processing time: {end_time - start_time:.2f} seconds")
 
-        final_answer = extract_and_normalize_answer(full_reasoning)
-        final_answer_list.append(final_answer)
-        print(f"  -> Extracted and Normalized Answer: {final_answer}\n")
+    # --- Combine existing and new results ---
+    new_results_df = pd.DataFrame(new_results_list)
+    final_df = pd.concat([existing_results_df, new_results_df], ignore_index=True)
 
-    results_df = pd.DataFrame({
-        'Question': df[QUESTION_COLUMN],
-        'Full_Model_Reasoning': full_reasoning_list,
-        'Final_Answer_Letter': final_answer_list
-    })
+    # --- Re-processing Logic for Failed Answers ("N/A" or "Parse Error") ---
+    df_to_retry = final_df[final_df['Final_Answer_Letter'].isin(['N/A', 'Parse Error'])].copy()
+    if not df_to_retry.empty:
+        print("\n" + "="*50)
+        print(f"🕵️ Found {len(df_to_retry)} questions with parsing failures. Re-attempting...")
+        print("="*50)
+        retry_start_time = time.time()
+        for index, row in df_to_retry.iterrows():
+            question = row[QUESTION_COLUMN]
+            print(f"Re-processing question for index {index}: '{str(question)[:50]}...'")
 
-    results_df.to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
+            full_reasoning = get_full_reasoning(question)
+            predicted_answer = extract_and_normalize_answer(full_reasoning)
+            print(f"  -> Re-attempted Prediction: {predicted_answer}\n")
 
-    end_time = time.time()
-    total_time = end_time - start_time
+            # Update the DataFrame at the specific index
+            final_df.loc[index, 'Full_Model_Reasoning'] = full_reasoning
+            final_df.loc[index, 'Final_Answer_Letter'] = predicted_answer
+        retry_end_time = time.time()
+        print(f"⏱️ Re-processing time: {retry_end_time - retry_start_time:.2f} seconds")
+    else:
+        print("\n✅ No parsing failures found to re-attempt.")
 
-    print("\n" + "="*50)
-    print(f"✅ All predictions complete.")
-    print(f"💾 Results saved to '{OUTPUT_CSV}'.")
-    print(f"⏱️ Total time taken: {total_time:.2f} seconds")
-    print("="*50)
+    # --- Final Calculation and Summary ---
+    if not final_df.empty:
+        # Reorder columns for clarity
+        cols_order = ['Question', 'Answer', 'Ground_Truth_Letter', 'Final_Answer_Letter', 'Full_Model_Reasoning']
+        final_df = final_df[[col for col in cols_order if col in final_df.columns]]
+        
+        # Save the final, complete DataFrame
+        final_df.to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
+
+        # Calculate Accuracy
+        valid_for_accuracy = final_df[~final_df['Ground_Truth_Letter'].isin(['N/A', 'Parse Error'])]
+        correct_predictions = (valid_for_accuracy['Final_Answer_Letter'] == valid_for_accuracy['Ground_Truth_Letter']).sum()
+        total_questions_for_accuracy = len(valid_for_accuracy)
+        accuracy = (correct_predictions / total_questions_for_accuracy) * 100 if total_questions_for_accuracy > 0 else 0
+
+        print("\n" + "="*50)
+        print(f"✅ Processing complete.")
+        print(f"📊 Final Accuracy: {accuracy:.2f}% ({correct_predictions}/{total_questions_for_accuracy} correct)")
+        print(f"💾 All results saved to '{OUTPUT_CSV}'.")
+        print("="*50)
+
 
 if __name__ == "__main__":
     main()
