@@ -27,6 +27,8 @@ OUTPUT_CSV = '/content/drive/MyDrive/AraHealthQA/t2t1/final_result/predictions_f
 # --- Column names ---
 QUESTION_COLUMN = 'Question - Arabic'
 ANSWER_COLUMN = 'Answer - Arabic'
+# --- NEW: Added a column name for our predictions to manage state ---
+PREDICTED_COLUMN = 'Predicted_Answer'
 
 
 # --- Chain of Thought & Few-Shot Prompting Configuration ---
@@ -38,7 +40,7 @@ Final Answer: [The single Arabic letter of the correct option]
 This two-step process is mandatory. Your entire response must be in Arabic.
 """
 
-# --- Function to Generate Answers ---
+# --- Function to Generate Answers (No changes needed here) ---
 def generate_answer(question, model, tokenizer):
     """
     Generates an answer by manually formatting the prompt for BioMistral.
@@ -91,7 +93,7 @@ def generate_answer(question, model, tokenizer):
         return "INFERENCE_ERROR"
 
 
-# --- Function to Evaluate MCQ Accuracy ---
+# --- Function to Evaluate MCQ Accuracy (No changes needed here) ---
 def evaluate_mcq_accuracy(predictions, ground_truths):
     """
     Calculates and prints the accuracy, normalizing different forms of Alif.
@@ -100,7 +102,7 @@ def evaluate_mcq_accuracy(predictions, ground_truths):
     print("🚀 Starting Evaluation...")
     print("="*50)
     
-    error_codes = ["INFERENCE_ERROR", ""]
+    error_codes = ["INFERENCE_ERROR", "", "INVALID_TRUTH"]
     valid_indices = [i for i, p in enumerate(predictions) if p not in error_codes]
     valid_predictions = [predictions[i] for i in valid_indices]
     valid_ground_truths = [ground_truths[i] for i in valid_indices]
@@ -112,8 +114,8 @@ def evaluate_mcq_accuracy(predictions, ground_truths):
     def normalize_alif(letter):
         return letter.replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
 
-    normalized_predictions = [normalize_alif(p) for p in valid_predictions]
-    normalized_ground_truths = [normalize_alif(g) for g in valid_ground_truths]
+    normalized_predictions = [normalize_alif(str(p)) for p in valid_predictions]
+    normalized_ground_truths = [normalize_alif(str(g)) for g in valid_ground_truths]
 
     accuracy = accuracy_score(normalized_ground_truths, normalized_predictions)
     correct_predictions = sum(p == g for p, g in zip(normalized_ground_truths, normalized_predictions))
@@ -145,12 +147,38 @@ def main():
     df.dropna(subset=[QUESTION_COLUMN, ANSWER_COLUMN], inplace=True)
     df.reset_index(drop=True, inplace=True)
     
+    # --- MODIFICATION: Resume Logic ---
     if os.path.exists(OUTPUT_CSV):
-        print(f"Output file '{OUTPUT_CSV}' already exists. Please remove or rename it to run a new generation.")
+        print(f"✅ Found existing output file. Loading previous predictions to resume.")
+        try:
+            df_preds = pd.read_csv(OUTPUT_CSV, header=None, names=[PREDICTED_COLUMN], dtype=str, encoding='utf-8')
+            # Align previous predictions with the main dataframe by index
+            df[PREDICTED_COLUMN] = df_preds[PREDICTED_COLUMN]
+            # Fill any rows that didn't have a prediction with an empty string
+            df[PREDICTED_COLUMN].fillna('', inplace=True)
+        except Exception as e:
+            print(f"⚠️ Warning: Could not read previous predictions file correctly: {e}. Starting fresh.")
+            df[PREDICTED_COLUMN] = '' # Initialize with empty strings
+    else:
+        print("ℹ️ No previous output file found. Starting a new run.")
+        df[PREDICTED_COLUMN] = '' # Initialize with empty strings
+    
+    # --- MODIFICATION: Filter for Unanswered Questions ---
+    error_values_to_retry = ["", "INFERENCE_ERROR"]
+    # Identify rows where the predicted column is either empty or has an error
+    unanswered_df = df[df[PREDICTED_COLUMN].isin(error_values_to_retry) | df[PREDICTED_COLUMN].isnull()]
+    
+    if unanswered_df.empty:
+        print("\n🎉 All questions have already been answered. Nothing to do.")
+        # Proceed to final evaluation with existing data
+        ground_truths = [str(ans).strip()[0] if str(ans).strip() else "INVALID_TRUTH" for ans in df[ANSWER_COLUMN].tolist()]
+        predictions = df[PREDICTED_COLUMN].tolist()
+        evaluate_mcq_accuracy(predictions, ground_truths)
         return
         
+    print(f"\nFound {len(df)} total questions. {len(unanswered_df)} questions need processing.")
+    
     # --- Model Loading ---
-    # Updated print statement for the new model
     print("="*50)
     print("🚀 Initializing local model: BioMistral/BioMistral-7B-slerp")
     print("This may take a few minutes...")
@@ -165,19 +193,14 @@ def main():
         gc.collect()
         torch.cuda.empty_cache()
         
-        # --- MODEL ID CHANGED HERE ---
         model_id = "BioMistral/BioMistral-7B-slerp"
         
-        # Use 4-bit quantization for memory efficiency
         quantization_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_compute_dtype=torch.bfloat16
         )
         
-        # Load tokenizer and model separately
         tokenizer = AutoTokenizer.from_pretrained(model_id)
-        
-        # Set the padding token to the end-of-sequence token if it's not already set
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         
@@ -193,35 +216,48 @@ def main():
     print("✅ Model loaded successfully.")
     
     # --- Prediction Generation ---
-    predictions = []
-    total_questions = len(df)
+    total_to_process = len(unanswered_df)
+    processed_count = 0
     start_time = time.time()
 
-    for index, row in df.iterrows():
+    # --- MODIFICATION: Loop only over unanswered questions ---
+    for index, row in unanswered_df.iterrows():
+        processed_count += 1
+        print(f"Processing question {processed_count}/{total_to_process} (Overall index: {index})...")
+        
         question = row[QUESTION_COLUMN]
-        print(f"Processing question {index + 1}/{total_questions}...")
         answer_letter = generate_answer(question, model, tokenizer)
-        predictions.append(answer_letter)
+        
+        # --- MODIFICATION: Update the main DataFrame directly ---
+        df.loc[index, PREDICTED_COLUMN] = answer_letter
         
         ground_truth_letter = str(row[ANSWER_COLUMN]).strip()[0] if str(row[ANSWER_COLUMN]).strip() else "N/A"
         print(f"  -> Ground Truth: {ground_truth_letter} | Model's Predicted Letter: {answer_letter}")
+
+        # --- MODIFICATION: Intermittent saving for resilience ---
+        if processed_count % 10 == 0:
+            print(f"  -> Intermittently saving progress...")
+            df[PREDICTED_COLUMN].to_csv(OUTPUT_CSV, header=False, index=False, encoding='utf-8')
 
     end_time = time.time()
     total_duration = end_time - start_time
     minutes = int(total_duration // 60)
     seconds = int(total_duration % 60)
     print("\n" + "="*50)
-    print(f"✅ Prediction generation complete.")
-    print(f"⏱️  Total time taken: {minutes} minutes and {seconds} seconds.")
+    print(f"✅ Prediction generation complete for the remaining questions.")
+    if total_to_process > 0:
+        print(f"⏱️  Time taken for this session: {minutes} minutes and {seconds} seconds.")
     print("="*50)
-
-    predictions_df = pd.DataFrame(predictions)
-    predictions_df.to_csv(OUTPUT_CSV, header=False, index=False, encoding='utf-8')
-    print(f"\nSuccessfully saved predictions to '{OUTPUT_CSV}'.")
+    
+    # --- MODIFICATION: Save the final, complete results ---
+    df[PREDICTED_COLUMN].to_csv(OUTPUT_CSV, header=False, index=False, encoding='utf-8')
+    print(f"\nSuccessfully saved all predictions to '{OUTPUT_CSV}'.")
 
     # --- Final Evaluation ---
     ground_truths = [str(ans).strip()[0] if str(ans).strip() else "INVALID_TRUTH" for ans in df[ANSWER_COLUMN].tolist()]
-    evaluate_mcq_accuracy(predictions, ground_truths)
+    # --- MODIFICATION: Use the updated column from the DataFrame for evaluation ---
+    final_predictions = df[PREDICTED_COLUMN].tolist()
+    evaluate_mcq_accuracy(final_predictions, ground_truths)
 
 
 if __name__ == "__main__":
