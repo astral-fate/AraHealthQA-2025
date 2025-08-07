@@ -96,45 +96,33 @@ def generate_answer(question, pipeline):
         # Extract the generated text after the prompt
         response_text = outputs[0]["generated_text"][len(prompt):]
 
-        # --- Parsing Logic ---
-        # 1. Primary method: Look for the pure Arabic format
-        match = re.search(r"الإجابة النهائية:\s*([\u0621-\u064A])", response_text, re.IGNORECASE)
-        if match:
-            return match.group(1)
-
-        # 2. Fallback method: Look for the English "Final Answer" but with an Arabic letter
-        match = re.search(r"Final Answer:\s*([\u0621-\u064A])", response_text, re.IGNORECASE)
-        if match:
-            print(f"  -> Found 'Final Answer' format, but with Arabic letter.")
-            return match.group(1)
-
-        # 3. Heuristic method: Look for Arabic conclusive phrases
-        conclusive_phrases = [
-            r"الخيار الصحيح هو\s*([\u0621-\u064A])", r"الإجابة الصحيحة هي\s*([\u0621-\u064A])",
-            r"الاستنتاج هو أن الخيار\s*([\u0621-\u064A])", r"الخيار\s*([\u0621-\u064A])\s*هو الصحيح",
-        ]
-        for phrase in conclusive_phrases:
-            match = re.search(phrase, response_text)
-            if match:
-                print(f"  -> Found answer using Arabic conclusive phrase heuristic.")
-                return match.group(1)
-
-        # 4. Fallback method: Look for English letters and translate them
-        english_match = re.search(r"Final Answer:\s*([A-E])", response_text, re.IGNORECASE)
+        # --- NEW & IMPROVED PARSING LOGIC ---
+        
+        # 1. Primary Method: Look for the English answer pattern the model is actually using.
+        # This regex looks for "The answer is A" or "The correct answer is B", etc.
+        english_match = re.search(r"The (?:correct )?answer is\s+([A-E])", response_text, re.IGNORECASE)
         if english_match:
             english_letter = english_match.group(1).upper()
             translation_map = {'A': 'أ', 'B': 'ب', 'C': 'ج', 'D': 'د', 'E': 'ه'}
             arabic_letter = translation_map.get(english_letter)
             if arabic_letter:
-                print(f"  -> Found English letter '{english_letter}', translated to '{arabic_letter}'.")
+                # This is now the most likely successful path
                 return arabic_letter
+            
+        # 2. Fallback: Look for the original Arabic format, just in case the model complies.
+        match = re.search(r"الإجابة النهائية:\s*([\u0621-\u064A])", response_text, re.IGNORECASE)
+        if match:
+            return match.group(1)
 
-        # 5. Last resort: Look for any mentioned Arabic letter
-        option_mentions = re.findall(r"الخيار\s*([\u0621-\u064A])", response_text)
-        if option_mentions:
-            last_option = option_mentions[-1]
-            print(f"  -> Found answer using last-mentioned option heuristic: '{last_option}'")
-            return last_option
+        # 3. Fallback: Look for the original English "Final Answer" format.
+        english_final_answer_match = re.search(r"Final Answer:\s*([A-E])", response_text, re.IGNORECASE)
+        if english_final_answer_match:
+            english_letter = english_final_answer_match.group(1).upper()
+            translation_map = {'A': 'أ', 'B': 'ب', 'C': 'ج', 'D': 'د', 'E': 'ه'}
+            arabic_letter = translation_map.get(english_letter)
+            if arabic_letter:
+                print(f"  -> Found English 'Final Answer:' format, translated '{english_letter}' to '{arabic_letter}'.")
+                return arabic_letter
 
         # If all parsing fails, return an empty string
         print(f"  -> Warning: Could not deduce answer from response: '{response_text}'. Recording as empty.")
@@ -143,6 +131,7 @@ def generate_answer(question, pipeline):
     except Exception as e:
         print(f"  -> An error occurred during model inference: {e}")
         return "INFERENCE_ERROR"
+
 
 
 # --- Function to Evaluate MCQ Accuracy ---
