@@ -1,6 +1,6 @@
 # --- Step 1: Install all necessary libraries ---
-# This needs to be run once to install the required packages for the model.
-# !pip install -q -U transformers bitsandbytes accelerate Pillow
+# This needs to be run once to install the required packages.
+# !pip install -q -U transformers bitsandbytes accelerate Pillow torch
 
 # --- Step 2: Import libraries ---
 import os
@@ -8,29 +8,41 @@ import re
 import time
 import pandas as pd
 import torch
-from transformers import pipeline
+from transformers import pipeline, Pipeline
+from datetime import datetime
 
 # --- Step 3: Initialize the MedGemma Model ---
-# This will download the model (over 50GB) the first time it's run.
-# It requires a GPU runtime in Google Colab.
-print("Initializing the MedGemma pipeline...")
+# This will download the model (over 50GB) the first time.
+# It requires a high-VRAM GPU and can take a long time to initialize.
+
+print(f"[{datetime.now().strftime('%H:%M:%S')}] Initializing the MedGemma pipeline...")
+pipe: Pipeline # Type hint for clarity
 try:
     pipe = pipeline(
         "image-text-to-text",
         model="google/medgemma-27b-it",
         torch_dtype=torch.bfloat16,
         device_map="auto", # Automatically use the available GPU
+        trust_remote_code=True, # Often required for complex models
     )
-    print("✅ Pipeline initialized successfully.")
+    print(f"✅ [{datetime.now().strftime('%H:%M:%S')}] Pipeline initialized successfully.")
+
+    # --- 🩺 Model Warm-up Step ---
+    # Perform a single, simple inference to trigger one-time kernel compilations.
+    # This "cold start" can take several minutes.
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Performing one-time model warm-up. This may take a few minutes...")
+    warm_up_messages = [{"role": "user", "content": [{"type": "text", "text": "What is a cell?"}]}]
+    _ = pipe(warm_up_messages, max_new_tokens=10)
+    print(f"✅ [{datetime.now().strftime('%H:%M:%S')}] Model is warmed up and ready for processing.")
+
 except Exception as e:
-    print(f"❌ Failed to initialize pipeline. Ensure you are using a GPU runtime.")
+    print(f"❌ Failed to initialize or warm up the pipeline. Ensure you are using a GPU runtime with sufficient RAM/VRAM.")
     print(f"Error: {e}")
     # Stop execution if the model can't be loaded
     raise
 
 # --- Step 4: File Paths and Column Names ---
 INPUT_CSV = '/content/drive/MyDrive/AraHealthQA/multiple-choice-questions.csv'
-# Updated output file name for the MedGemma model
 OUTPUT_CSV = '/content/drive/MyDrive/AraHealthQA/mcq/predictions_medgemma_mcq_with_accuracy.csv'
 QUESTION_COLUMN = 'Question'
 ANSWER_COLUMN = 'Answer' # Ground truth column
@@ -69,44 +81,23 @@ def extract_and_normalize_answer(full_text):
     """
     Parses the full text from the model to find, normalize, and translate the final answer letter.
     """
-    found_letter = None
+    # Increased robustness of the regex
     explicit_pattern = r"(?:Final Answer|الإجابة النهائية|الإجابة الصحيحة هي|الإجابة الصحيحة|الخلاصة)\s*[:：]?\s*\**\s*([A-Ea-eأ-ي])"
     match = re.search(explicit_pattern, full_text, re.IGNORECASE | re.MULTILINE)
+
     if match:
-        found_letter = match.group(1)
-
-    if not found_letter:
-        line_pattern = r"^\s*\**([A-Ea-eأ-ي])\.\s*.+"
-        lines = full_text.splitlines()
-        for line in reversed(lines):
-            match = re.match(line_pattern, line.strip())
-            if match:
-                found_letter = match.group(1)
-                break
-
-    if not found_letter:
-        lines = full_text.splitlines()
-        for line in reversed(lines[-3:]):
-            cleaned_line = line.strip().replace('*', '')
-            if len(cleaned_line) == 1 and re.match(r"^[A-Ea-eأ-ي]$", cleaned_line):
-                found_letter = cleaned_line
-                break
-
-    if not found_letter:
-        return "N/A"
+        found_letter = match.group(1).strip()
+    else: # Fallback to finding the last mentioned letter if the explicit pattern fails
+        found_letters = re.findall(r"\b([A-Ea-eأ-ي])\b", full_text)
+        if found_letters:
+            found_letter = found_letters[-1]
+        else:
+            return "N/A" # No letter found
 
     found_letter = found_letter.upper()
-    translation_map = {'A': 'أ', 'B': 'ب', 'C': 'ج', 'D': 'د', 'E': 'ه'}
-    if found_letter in translation_map:
-        found_letter = translation_map[found_letter]
-
-    if found_letter in ['ا', 'إ', 'آ', 'أ']:
-        found_letter = 'أ'
-
-    if found_letter in ['أ', 'ب', 'ج', 'د', 'ه']:
-        return found_letter
-    else:
-        return "Parse Error"
+    # Normalize English and Arabic letters to a single Arabic format
+    translation_map = {'A': 'أ', 'B': 'ب', 'C': 'ج', 'D': 'د', 'E': 'ه', 'ا': 'أ', 'إ': 'أ', 'آ': 'أ'}
+    return translation_map.get(found_letter, "Parse Error")
 
 def extract_ground_truth_letter(answer_text):
     """
@@ -114,9 +105,11 @@ def extract_ground_truth_letter(answer_text):
     """
     if not isinstance(answer_text, str):
         return "N/A"
+    # Match the starting letter more robustly
     match = re.match(r"^\s*([أ-ي])", answer_text.strip())
     if match:
         letter = match.group(1)
+        # Normalize different forms of Alef
         if letter in ['ا', 'إ', 'آ', 'أ']:
             return 'أ'
         return letter
@@ -124,19 +117,29 @@ def extract_ground_truth_letter(answer_text):
 
 def get_full_reasoning(user_prompt):
     """
-    Uses the local MedGemma pipeline to get the model's reasoning.
+    Uses the MedGemma pipeline to get the model's reasoning with enhanced logging.
     """
     messages = FEW_SHOT_MESSAGES + [
         {"role": "user", "content": [{"type": "text", "text": user_prompt}]}
     ]
     try:
+        start_inf_time = time.time()
+        print(f"  -> [{datetime.now().strftime('%H:%M:%S')}] Calling model for inference...")
+
         output = pipe(messages, max_new_tokens=1024)
         generated_content = output[0]["generated_text"][-1]["content"]
-        print(generated_content)
+
+        end_inf_time = time.time()
+        print(f"  -> [{datetime.now().strftime('%H:%M:%S')}] Inference complete. Time taken: {end_inf_time - start_inf_time:.2f}s")
+        # print(generated_content) # Uncomment for full model output debugging
         return generated_content
+    except torch.cuda.OutOfMemoryError:
+        error_message = "CUDA out of memory. The model is too large for the available VRAM. Try restarting the runtime and using a smaller batch size if applicable."
+        print(f"\n  -> ❌ {error_message}")
+        return error_message
     except Exception as e:
         error_message = f"An error occurred during model inference: {e}"
-        print(f"\n  -> {error_message}")
+        print(f"\n  -> ❌ {error_message}")
         return error_message
 
 def main():
@@ -157,15 +160,21 @@ def main():
         print(f"Error: Input CSV '{INPUT_CSV}' not found. Ensure Drive is mounted and the path is correct.")
         return
 
-    # --- Resumability Logic ---
+    # Resumability Logic
     existing_results_df = pd.DataFrame()
     if os.path.exists(OUTPUT_CSV):
         print(f"📄 Found existing results file: '{OUTPUT_CSV}'. Loading previous work.")
         existing_results_df = pd.read_csv(OUTPUT_CSV)
-        processed_questions = existing_results_df[QUESTION_COLUMN].tolist()
-        print(f"  -> Found {len(processed_questions)} previously processed questions.")
-        df_to_process = full_df[~full_df[QUESTION_COLUMN].isin(processed_questions)].copy()
-        if len(df_to_process) == 0:
+        # Ensure we don't try to resume with an empty or malformed file
+        if QUESTION_COLUMN in existing_results_df.columns:
+            processed_questions = existing_results_df[QUESTION_COLUMN].tolist()
+            print(f"  -> Found {len(processed_questions)} previously processed questions.")
+            df_to_process = full_df[~full_df[QUESTION_COLUMN].isin(processed_questions)].copy()
+        else:
+            print("  -> Existing file is malformed. Starting from scratch.")
+            df_to_process = full_df.copy()
+
+        if len(df_to_process) == 0 and not existing_results_df.empty:
             print("✅ All questions have already been processed. Nothing to do.")
             accuracy = (existing_results_df['Final_Answer_Letter'] == existing_results_df['Ground_Truth_Letter']).sum() / len(existing_results_df) * 100
             print(f"📊 Final accuracy from existing file: {accuracy:.2f}%")
@@ -185,8 +194,13 @@ def main():
     for index, row in df_to_process.iterrows():
         question = row[QUESTION_COLUMN]
         ground_truth_text = row[ANSWER_COLUMN]
-        original_index = full_df.index[full_df[QUESTION_COLUMN] == question].tolist()[0]
-        print(f"Processing question {original_index + 1}/{len(full_df)}: '{str(question)[:50]}...'")
+        # Find the original index from the full, unprocessed dataframe
+        original_index_list = full_df.index[full_df[QUESTION_COLUMN] == question].tolist()
+        if not original_index_list:
+            continue # Should not happen, but good practice
+        original_index = original_index_list[0]
+
+        print(f"Processing question {original_index + 1}/{len(full_df)}: '{str(question)[:60]}...'")
 
         full_reasoning = get_full_reasoning(question)
         predicted_answer = extract_and_normalize_answer(full_reasoning)
@@ -200,12 +214,20 @@ def main():
             'Ground_Truth_Letter': ground_truth_letter,
             'Final_Answer_Letter': predicted_answer
         })
+        
+        # Save progress intermittently (e.g., every 10 questions)
+        if (index + 1) % 10 == 0:
+            temp_df = pd.DataFrame(new_results_list)
+            pd.concat([existing_results_df, temp_df]).to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
+            print(f"💾 Intermittent save complete. {len(new_results_list)} new results saved.")
 
+
+    # Final save for any remaining items
     new_results_df = pd.DataFrame(new_results_list)
     final_df = pd.concat([existing_results_df, new_results_df], ignore_index=True)
     final_df.to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
 
-    # --- Final Calculation and Summary ---
+    # Final Calculation and Summary
     correct_predictions = (final_df['Final_Answer_Letter'] == final_df['Ground_Truth_Letter']).sum()
     total_questions = len(final_df)
     accuracy = (correct_predictions / total_questions) * 100 if total_questions > 0 else 0
