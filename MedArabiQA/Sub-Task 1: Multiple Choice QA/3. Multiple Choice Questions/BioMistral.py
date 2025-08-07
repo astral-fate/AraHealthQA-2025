@@ -1,254 +1,210 @@
-# --- Step 1: Install all necessary libraries ---
-# This needs to be run once to install the required packages for the model.
-# !pip install -q -U transformers bitsandbytes accelerate Pillow
-
-# --- Step 2: Import libraries ---
 import os
 import re
-import time
 import pandas as pd
+import time
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from sklearn.metrics import accuracy_score
 
-# --- Step 3: Initialize the BioMistral Model ---
-# This will download the model (around 14GB) the first time it's run.
-# It requires a GPU runtime in Google Colab.
-print("Initializing the BioMistral pipeline...")
-try:
-    model_name = "BioMistral/BioMistral-7B"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.bfloat16,
-        device_map="auto", # Automatically use the available GPU
-    )
-    print("✅ BioMistral pipeline initialized successfully.")
-except Exception as e:
-    print(f"❌ Failed to initialize pipeline. Ensure you are using a GPU runtime.")
-    print(f"Error: {e}")
-    # Stop execution if the model can't be loaded
-    raise
-
-# --- Step 4: File Paths and Column Names ---
+# --- MODIFIED: File paths and column names updated for your dataset ---
 INPUT_CSV = '/content/drive/MyDrive/AraHealthQA/multiple-choice-questions.csv'
-# Updated output file name for the BioMistral model with new functionality
-OUTPUT_CSV = '/content/drive/MyDrive/AraHealthQA/mcq/predictions_biomistral_mcq_with_accuracy.csv'
+# Using a new output file name to reflect the new input data
+OUTPUT_CSV = '/content/drive/MyDrive/AraHealthQA/predictions_biomistral_mcq.csv'
+
+# --- MODIFIED: Column names updated to match your CSV file ---
 QUESTION_COLUMN = 'Question'
-ANSWER_COLUMN = 'Answer' # Ground truth column - THIS IS NOW REQUIRED IN YOUR INPUT CSV
+ANSWER_COLUMN = 'Answer'
+# The 'Category' column from your file is available in the dataframe but not used in this script's logic.
+# --- End of Modifications ---
 
-# --- Step 5: Prepare Few-Shot Examples for BioMistral ---
-# The message format uses a standard chat structure.
-FEW_SHOT_MESSAGES = [
-    {
-        "role": "user",
-        "content": """املأ الفراغات في الجملة التالية:
-في حالة الانصباب الجنبي، يشير انخفاض أو غياب الرجفان اللمسي على الجانب المصاب إلى ____، والذي ينتج عن ____.
-أ. تراكم السوائل؛ عزل الصوت
-ب. احتباس الهواء؛ انهيار الحويصلات الهوائية
-ج. التليف؛ انخفاض مرونة الرئة
-د. نمو الورم؛ انسداد الشعب الهوائية"""
-    },
-    {
-        "role": "assistant",
-        "content": """**التفكير خطوة بخطوة:**
-1.  **تحليل السؤال**: يسأل السؤال عن دلالة انخفاض أو غياب "الرجفان اللمسي" (tactile fremitus) في حالة "الانصباب الجنبي" (pleural effusion) وعن الآلية المسببة لذلك. الرجفان اللمسي هو الاهتزاز الذي يمكن الشعور به على جدار الصدر أثناء الكلام.
-2.  **تقييم الخيارات**:
-    * **أ. تراكم السوائل؛ عزل الصوت**: الانصباب الجنبي هو بالفعل تراكم للسوائل في الغشاء الجنبي. هذا السائل يعمل كعازل، مما يمنع انتقال اهتزازات الصوت من الرئة إلى جدار الصدر. هذا يتطابق تمامًا مع находة انخفاض الرجفان اللمسي.
-    * **ب. احتباس الهواء؛ انهيار الحويصلات الهوائية**: هذا يصف حالة استرواح الصدر (pneumothorax) أو انخماص الرئة (atelectasis)، والتي لها موجودات فيزيائية مختلفة.
-    * **ج. التليف؛ انخفاض مرونة الرئة**: التليف الرئوي (Pulmonary fibrosis) يزيد من كثافة أنسجة الرئة، مما قد يؤدي إلى زيادة الرجفان اللمسي، وليس انخفاضه.
-    * **د. نمو الورم؛ انسداد الشعب الهوائية**: قد يسبب الورم انصبابًا جنبيًا، لكن السبب المباشر لانخفاض الرجفان في هذه الحالة هو السائل نفسه الذي يعزل الصوت. الخيار "أ" يصف الآلية الفيزيائية المباشرة بشكل أفضل.
-3.  **الاستنتاج**: الخيار الأكثر دقة هو أن تراكم السوائل هو ما يسبب عزل الصوت، مما يؤدي إلى انخفاض الرجفان اللمسي.
 
-Final Answer: أ"""
-    }
-]
+# --- PIPELINE 1: Reasoning Prompt (SIMPLIFIED - NO FEW-SHOT) ---
+REASONING_SYSTEM_PROMPT = """You are an expert medical professional. Your task is to analyze a multiple-choice question in Arabic.
+Provide a step-by-step thinking process. Analyze the medical question, evaluate each option (أ, ب, ج, د, ه), and explain your reasoning for choosing the correct answer.
+Conclude your reasoning by clearly stating which option is the most likely answer. Your entire response must be in Arabic.
+"""
 
-def extract_and_normalize_answer(full_text):
+# --- PIPELINE 2: Extraction Prompt (SIMPLIFIED - NO FEW-SHOT) ---
+ARABIC_EXTRACTION_PROMPT = """راجع التحليل الطبي التالي وحدد حرف الإجابة الصحيحة فقط لا غير.
+
+[بداية التحليل الطبي]
+{reasoning_text}
+[نهاية التحليل الطبي]
+
+الحرف الصحيح:"""
+
+# --- Letter Mapping for Robust Parsing ---
+ENGLISH_TO_ARABIC_MAP = {
+    'a': 'أ', 'b': 'ب', 'c': 'ج', 'd': 'د', 'h': 'ه'
+}
+
+# --- Function to Generate Answers (SIMPLIFIED - NO FEW-SHOT) ---
+def generate_answer(question, model, tokenizer):
     """
-    Parses the full text from the model to find, normalize, and translate the final answer letter.
+    Generates an answer using a two-step process without few-shot examples
+    to prevent repetitive answer biasing.
     """
-    found_letter = None
-    explicit_pattern = r"(?:Final Answer|الإجابة النهائية|الإجابة الصحيحة هي|الإجابة الصحيحة|الخلاصة)\s*[:：]?\s*\**\s*([A-Ea-eأ-ي])"
-    match = re.search(explicit_pattern, full_text, re.IGNORECASE | re.MULTILINE)
-    if match:
-        found_letter = match.group(1)
-
-    if not found_letter:
-        line_pattern = r"^\s*\**([A-Ea-eأ-ي])\.\s*.+"
-        lines = full_text.splitlines()
-        for line in reversed(lines):
-            match = re.match(line_pattern, line.strip())
-            if match:
-                found_letter = match.group(1)
-                break
-
-    if not found_letter:
-        lines = full_text.splitlines()
-        for line in reversed(lines[-3:]):
-            cleaned_line = line.strip().replace('*', '')
-            if len(cleaned_line) == 1 and re.match(r"^[A-Ea-eأ-ي]$", cleaned_line):
-                found_letter = cleaned_line
-                break
-
-    if not found_letter:
-        return "N/A"
-
-    found_letter = found_letter.upper()
-    translation_map = {'A': 'أ', 'B': 'ب', 'C': 'ج', 'D': 'د', 'E': 'ه'}
-    if found_letter in translation_map:
-        found_letter = translation_map[found_letter]
-
-    if found_letter in ['ا', 'إ', 'آ', 'أ']:
-        found_letter = 'أ'
-
-    if found_letter in ['أ', 'ب', 'ج', 'د', 'ه']:
-        return found_letter
-    else:
-        return "Parse Error"
-
-def extract_ground_truth_letter(answer_text):
-    """
-    NEW: Extracts the first Arabic letter from the ground truth answer text
-    to be used for accuracy calculation.
-    """
-    if not isinstance(answer_text, str):
-        return "N/A"
-    match = re.match(r"^\s*([أ-ي])", answer_text.strip())
-    if match:
-        letter = match.group(1)
-        if letter in ['ا', 'إ', 'آ', 'أ']:
-            return 'أ'
-        return letter
-    return "N/A"
-
-def get_full_reasoning(user_prompt):
-    """
-    Uses the local BioMistral model to get its reasoning.
-    """
-    messages = FEW_SHOT_MESSAGES + [{"role": "user", "content": user_prompt}]
-    print("  -> 🤖 Generating response from BioMistral...")
+    # --- PIPELINE 1: Generate Reasoning (No Few-Shot) ---
     try:
-        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-        outputs = model.generate(**inputs, max_new_tokens=1024, do_sample=False, pad_token_id=tokenizer.eos_token_id)
-        response_text = tokenizer.decode(outputs[0, inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
-        print(f"  -> Raw response: {response_text[:100]}...") # Print a snippet
-        return response_text
+        # The message list is now much simpler, containing only the system prompt and the user's question.
+        reasoning_messages = [
+            {"role": "user", "content": f"{REASONING_SYSTEM_PROMPT}\n\n{question}"},
+        ]
+
+        prompt_reasoning = tokenizer.apply_chat_template(reasoning_messages, tokenize=False, add_generation_prompt=True)
+        inputs_reasoning = tokenizer(prompt_reasoning, return_tensors="pt").to(model.device)
+
+        outputs_reasoning = model.generate(
+            **inputs_reasoning, max_new_tokens=768, do_sample=False, pad_token_id=tokenizer.eos_token_id
+        )
+        reasoning_text = tokenizer.decode(outputs_reasoning[0, inputs_reasoning.input_ids.shape[1]:], skip_special_tokens=True).strip()
+
+        if not reasoning_text or reasoning_text.isspace():
+             print("  -> Warning: Reasoning generation resulted in empty text.")
+             return ""
+        # Shortened success message for cleaner logs
+        # print(f"  -> Reasoning generated successfully.")
+
     except Exception as e:
-        error_message = f"An error occurred during model inference: {e}"
-        print(f"\n  -> {error_message}")
-        return error_message
+        print(f"  -> An error occurred during Pipeline 1 (Reasoning): {e}")
+        return "INFERENCE_ERROR"
 
-def main():
-    """
-    Main function to process the CSV file with BioMistral, including resumability,
-    re-attempts for failed answers, and final accuracy calculation.
-    """
-    output_dir = os.path.dirname(OUTPUT_CSV)
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-        print(f"Created output directory: {output_dir}")
-
+    # --- PIPELINE 2: Extract Final Answer (No Few-Shot) ---
     try:
-        full_df = pd.read_csv(INPUT_CSV)
-        if QUESTION_COLUMN not in full_df.columns or ANSWER_COLUMN not in full_df.columns:
-            print(f"Error: Input CSV must have '{QUESTION_COLUMN}' and '{ANSWER_COLUMN}' columns.")
-            return
-    except FileNotFoundError:
-        print(f"Error: Input CSV '{INPUT_CSV}' not found. Ensure Drive is mounted and the path is correct.")
+        extraction_prompt_text = ARABIC_EXTRACTION_PROMPT.format(reasoning_text=reasoning_text)
+        inputs_extraction = tokenizer(extraction_prompt_text, return_tensors="pt").to(model.device)
+
+        outputs_extraction = model.generate(
+            **inputs_extraction, max_new_tokens=5, do_sample=False, pad_token_id=tokenizer.eos_token_id
+        )
+
+        final_answer_text = tokenizer.decode(outputs_extraction[0, inputs_extraction.input_ids.shape[1]:], skip_special_tokens=True).strip().lower()
+
+        # --- Stricter Parsing Logic (No Change) ---
+        arabic_match = re.search(r"([أإآابجده])", final_answer_text)
+        if arabic_match:
+            matched_char = arabic_match.group(1)
+            if matched_char in ['ا', 'إ', 'آ']:
+                return 'أ'
+            return matched_char
+
+        english_match = re.search(r"([abcdh])", final_answer_text)
+        if english_match:
+            english_letter = english_match.group(1)
+            arabic_letter = ENGLISH_TO_ARABIC_MAP.get(english_letter, "")
+            # print(f"  -> Found English letter '{english_letter}', mapped to '{arabic_letter}'.")
+            return arabic_letter
+
+        # print(f"  -> Warning: No valid option found in Pipeline 2 output: '{final_answer_text}'")
+        return ""
+
+    except Exception as e:
+        print(f"  -> An error occurred during Pipeline 2 (Extraction): {e}")
+        return "INFERENCE_ERROR"
+
+
+# --- Main execution logic and evaluation function (No changes needed below) ---
+def evaluate_mcq_accuracy(predictions, ground_truths):
+    """Calculates and prints the accuracy of the model's predictions."""
+    print("\n" + "="*50)
+    print("🚀 Starting Evaluation...")
+    print("="*50)
+
+    def normalize_alif(letter):
+        return letter.replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
+
+    error_codes = ["INFERENCE_ERROR", ""]
+    valid_indices = [i for i, p in enumerate(predictions) if p not in error_codes]
+    valid_predictions = [predictions[i] for i in valid_indices]
+    valid_ground_truths = [ground_truths[i] for i in valid_indices]
+
+    if not valid_predictions:
+        print("No valid predictions to evaluate.")
         return
 
-    # --- Resumability Logic ---
-    existing_results_df = pd.DataFrame()
+    normalized_predictions = [normalize_alif(p) for p in valid_predictions]
+    normalized_ground_truths = [normalize_alif(g) for g in valid_ground_truths]
+
+    accuracy = accuracy_score(normalized_ground_truths, normalized_predictions)
+    correct_predictions = sum(p == g for p, g in zip(normalized_ground_truths, normalized_predictions))
+
+    total_valid_predictions = len(valid_predictions)
+    total_questions = len(ground_truths)
+    failed_or_empty = total_questions - total_valid_predictions
+
+    print(f"Total Questions Attempted: {total_questions}")
+    print(f"Final Unanswered / Error Count: {failed_or_empty}")
+    print(f"Valid Predictions to Evaluate: {total_valid_predictions}")
+    print("-" * 20)
+    print(f"Correct Predictions: {correct_predictions} / {total_valid_predictions}")
+    print(f"📊 Accuracy (on valid responses, Alif normalized): {accuracy * 100:.2f}%")
+    print("="*50 + "\n✅ Evaluation Complete.\n" + "="*50)
+
+
+def main():
+    """Main function to run the prediction and evaluation process."""
+    try:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model_name = "BioMistral/BioMistral-7B"
+        print(f"🚀 Initializing model '{model_name}' on device '{device}'...")
+
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.bfloat16,
+            device_map="auto"
+        )
+        print("✅ BioMistral model and tokenizer initialized successfully.")
+    except Exception as e:
+        print(f"❌ Failed to initialize the Hugging Face model. Error: {e}")
+        return
+
+    try:
+        df = pd.read_csv(INPUT_CSV, encoding='utf-8')
+    except FileNotFoundError:
+        print(f"Error: The file '{INPUT_CSV}' was not found. Please check the path.")
+        return
+    except Exception as e:
+        print(f"An error occurred while reading the CSV: {e}")
+        return
+
+    df.dropna(subset=[QUESTION_COLUMN, ANSWER_COLUMN], inplace=True)
+    df.reset_index(drop=True, inplace=True)
+
     if os.path.exists(OUTPUT_CSV):
-        print(f"📄 Found existing results file: '{OUTPUT_CSV}'. Loading previous work.")
-        existing_results_df = pd.read_csv(OUTPUT_CSV)
-        processed_questions = existing_results_df[QUESTION_COLUMN].tolist()
-        print(f"  -> Found {len(processed_questions)} previously processed questions.")
-        df_to_process = full_df[~full_df[QUESTION_COLUMN].isin(processed_questions)].copy()
-        if not df_to_process.empty:
-            print(f"  -> Resuming with {len(df_to_process)} remaining questions.")
-        else:
-            print("  -> All questions seem to be processed. Checking for failures to re-attempt.")
-    else:
-        print("📄 No existing results file found. Starting from scratch.")
-        df_to_process = full_df.copy()
+        print(f"Output file '{OUTPUT_CSV}' already exists. Please remove or rename it to run a new generation.")
+        return
 
-    # --- Initial Processing of New Questions ---
-    new_results_list = []
-    if not df_to_process.empty:
-        print("="*50)
-        print(f"🚀 Starting prediction for {len(df_to_process)} new questions...")
-        print("="*50)
-        start_time = time.time()
-        for index, row in df_to_process.iterrows():
-            question = row[QUESTION_COLUMN]
-            ground_truth_text = row[ANSWER_COLUMN]
-            original_index = full_df.index[full_df[QUESTION_COLUMN] == question].tolist()[0]
-            print(f"Processing question {original_index + 1}/{len(full_df)}: '{str(question)[:50]}...'")
+    print(f"'{OUTPUT_CSV}' not found. Starting a full prediction run...")
 
-            full_reasoning = get_full_reasoning(question)
-            predicted_answer = extract_and_normalize_answer(full_reasoning)
-            ground_truth_letter = extract_ground_truth_letter(ground_truth_text)
-            print(f"  -> Ground Truth: {ground_truth_letter} | Predicted: {predicted_answer}\n")
+    predictions = []
+    total_questions = len(df)
+    start_time = time.time()
 
-            new_results_list.append({
-                'Question': question,
-                'Answer': ground_truth_text,
-                'Full_Model_Reasoning': full_reasoning,
-                'Ground_Truth_Letter': ground_truth_letter,
-                'Final_Answer_Letter': predicted_answer
-            })
-        end_time = time.time()
-        print(f"⏱️ New question processing time: {end_time - start_time:.2f} seconds")
+    for index, row in df.iterrows():
+        question = row[QUESTION_COLUMN]
+        print(f"Processing question {index + 1}/{total_questions}...")
+        answer_letter = generate_answer(question, model, tokenizer)
+        predictions.append(answer_letter)
 
-    # --- Combine existing and new results ---
-    new_results_df = pd.DataFrame(new_results_list)
-    final_df = pd.concat([existing_results_df, new_results_df], ignore_index=True)
+        ground_truth_letter = str(row[ANSWER_COLUMN]).strip()[0] if str(row[ANSWER_COLUMN]).strip() else "N/A"
+        print(f"  -> Ground Truth: {ground_truth_letter} | Model's Predicted Letter: {answer_letter}")
 
-    # --- Re-processing Logic for Failed Answers ("N/A" or "Parse Error") ---
-    df_to_retry = final_df[final_df['Final_Answer_Letter'].isin(['N/A', 'Parse Error'])].copy()
-    if not df_to_retry.empty:
-        print("\n" + "="*50)
-        print(f"🕵️ Found {len(df_to_retry)} questions with parsing failures. Re-attempting...")
-        print("="*50)
-        retry_start_time = time.time()
-        for index, row in df_to_retry.iterrows():
-            question = row[QUESTION_COLUMN]
-            print(f"Re-processing question for index {index}: '{str(question)[:50]}...'")
+    end_time = time.time()
+    total_duration = end_time - start_time
+    minutes = int(total_duration // 60)
+    seconds = int(total_duration % 60)
+    print("\n" + "="*50)
+    print(f"✅ Prediction generation complete.")
+    print(f"⏱️  Total time taken: {minutes} minutes and {seconds} seconds.")
+    print("="*50)
 
-            full_reasoning = get_full_reasoning(question)
-            predicted_answer = extract_and_normalize_answer(full_reasoning)
-            print(f"  -> Re-attempted Prediction: {predicted_answer}\n")
+    predictions_df = pd.DataFrame(predictions)
+    predictions_df.to_csv(OUTPUT_CSV, header=False, index=False, encoding='utf-8')
+    print(f"\nSuccessfully saved predictions to '{OUTPUT_CSV}'.")
 
-            # Update the DataFrame at the specific index
-            final_df.loc[index, 'Full_Model_Reasoning'] = full_reasoning
-            final_df.loc[index, 'Final_Answer_Letter'] = predicted_answer
-        retry_end_time = time.time()
-        print(f"⏱️ Re-processing time: {retry_end_time - retry_start_time:.2f} seconds")
-    else:
-        print("\n✅ No parsing failures found to re-attempt.")
-
-    # --- Final Calculation and Summary ---
-    if not final_df.empty:
-        # Reorder columns for clarity
-        cols_order = ['Question', 'Answer', 'Ground_Truth_Letter', 'Final_Answer_Letter', 'Full_Model_Reasoning']
-        final_df = final_df[[col for col in cols_order if col in final_df.columns]]
-        
-        # Save the final, complete DataFrame
-        final_df.to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
-
-        # Calculate Accuracy
-        valid_for_accuracy = final_df[~final_df['Ground_Truth_Letter'].isin(['N/A', 'Parse Error'])]
-        correct_predictions = (valid_for_accuracy['Final_Answer_Letter'] == valid_for_accuracy['Ground_Truth_Letter']).sum()
-        total_questions_for_accuracy = len(valid_for_accuracy)
-        accuracy = (correct_predictions / total_questions_for_accuracy) * 100 if total_questions_for_accuracy > 0 else 0
-
-        print("\n" + "="*50)
-        print(f"✅ Processing complete.")
-        print(f"📊 Final Accuracy: {accuracy:.2f}% ({correct_predictions}/{total_questions_for_accuracy} correct)")
-        print(f"💾 All results saved to '{OUTPUT_CSV}'.")
-        print("="*50)
+    ground_truths = [str(ans).strip()[0] if str(ans).strip() else "INVALID_TRUTH" for ans in df[ANSWER_COLUMN].tolist()]
+    evaluate_mcq_accuracy(predictions, ground_truths)
 
 
 if __name__ == "__main__":
