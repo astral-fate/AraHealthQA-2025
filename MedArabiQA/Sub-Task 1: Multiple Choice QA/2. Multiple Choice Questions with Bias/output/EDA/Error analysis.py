@@ -198,13 +198,14 @@ if all_errors:
     ax2.axhline(median_accuracy, color='grey', linestyle='--', lw=1.5)
 
     # Add quadrant labels
-    ax2.text(ax2.get_xlim()[1], ax2.get_ylim()[1], ' High Accuracy, Slow ', fontsize=12, va='top', ha='right', backgroundcolor='w', color='darkorange')
-    ax2.text(ax.get_xlim()[0], ax.get_ylim()[1], ' High Accuracy, Fast ', fontsize=12, va='top', ha='left', backgroundcolor='w', color='green')
-    ax2.text(ax.get_xlim()[1], ax.get_ylim()[0], ' Low Accuracy, Slow ', fontsize=12, va='bottom', ha='right', backgroundcolor='w', color='red')
-    ax2.text(ax.get_xlim()[0], ax.get_ylim()[0], ' Low Accuracy, Fast ', fontsize=12, va='bottom', ha='left', backgroundcolor='w', color='blue')
+    ax2.text(ax2.get_xlim()[0], median_accuracy + 1, ' High Accuracy, Fast ', fontsize=12, va='bottom', ha='left', backgroundcolor='w', color='green')
+    ax2.text(ax2.get_xlim()[1], median_accuracy + 1, ' High Accuracy, Slow ', fontsize=12, va='bottom', ha='right', backgroundcolor='w', color='darkorange')
+    ax2.text(ax2.get_xlim()[0], median_accuracy - 1, ' Low Accuracy, Fast ', fontsize=12, va='top', ha='left', backgroundcolor='w', color='blue')
+    ax2.text(ax2.get_xlim()[1], median_accuracy - 1, ' Low Accuracy, Slow ', fontsize=12, va='top', ha='right', backgroundcolor='w', color='red')
+
 
     # Set titles and labels
-    ax2.set_title('Quadrant Analysis: Model Accuracy vs. Execution Time', fontsize=16, weight='bold', pad=20)
+    ax2.set_title('Quadrant Analysis: Model Accuracy vs. Execution Time (MCQ with Bias)', fontsize=16, weight='bold', pad=20)
     ax2.set_xlabel('Execution Time (minutes)', fontsize=12)
     ax2.set_ylabel('Accuracy (%)', fontsize=12)
     ax2.legend(title='Model', bbox_to_anchor=(1.03, 1), loc='upper left')
