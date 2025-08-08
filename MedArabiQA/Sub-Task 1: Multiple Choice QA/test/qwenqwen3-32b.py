@@ -1,39 +1,33 @@
-# https://build.nvidia.com/qwen/qwen3-235b-a22b
 import os
+import re
+import time
 import pandas as pd
 from openai import OpenAI
-from tqdm import tqdm # Used for a progress bar
-import re #Imported for parsing the model's output
+from getpass import getpass
 
-# --- Configuration ---
-# This script will attempt to load the API key from Colab secrets first.
-API_KEY = None
+# --- API Configuration for Google Colab ---
 try:
-    # Modified to read from Colab secrets as requested
     from google.colab import userdata
-    API_KEY = userdata.get('NVIDIA_API_KEY')
-    print("Successfully loaded NVIDIA_API_KEY from Colab secrets.")
-except (ImportError, KeyError):
-    print("Not in a Colab environment or key not found, trying to load from environment variable.")
-    API_KEY = os.environ.get("NVIDIA_API_KEY")
+    api_key = userdata.get('NVIDIA_API_KEY')
+    if not api_key:
+        raise ValueError("Secret 'NVIDIA_API_KEY' not found or is empty.")
+except (ImportError, ValueError, KeyError):
+    print("Could not find 'NVIDIA_API_KEY' in Colab secrets. Please enter it manually.")
+    api_key = getpass("NVIDIA API Key: ")
 
-# If the API key is still not found, set a placeholder to trigger the error message later
-if not API_KEY:
-    API_KEY = "$API_KEY_REQUIRED_IF_EXECUTING_OUTSIDE_NGC"
+client = OpenAI(
+  base_url = "https://integrate.api.nvidia.com/v1",
+  api_key = api_key
+)
 
-# --- File Paths ---
-# MODIFIED: The script now assumes you have two separate files without headers.
-# One for questions and one for answers.
-# PLEASE VERIFY THE PATH TO YOUR QUESTIONS FILE.
-QUESTIONS_FILE = '/content/drive/MyDrive/AraHealthQA/t2t1/data/subtask1_questions.csv' #<-- PLEASE VERIFY THIS PATH
-ANSWERS_FILE = '/content/drive/MyDrive/AraHealthQA/t2t1/data/subtask1_answers.csv' #<-- PLEASE VERIFY THIS PATH
-OUTPUT_FILE = 'model_predictions.csv' #<-- Name of the output file
+# --- File Paths and Column Names ---
+INPUT_CSV = '/content/drive/MyDrive/AraHealthQA/t2t1/test/subtask1_input_test.csv'
+# Updated output file name to reflect new functionality
+OUTPUT_CSV = '/content/drive/MyDrive/AraHealthQA/t2t2/test/qwen.csv'
+Quesstion_COLUMN = 'Quesstion'
+ANSWER_COLUMN = 'Answer' 
 
-# Specify the model you want to use
-MODEL_NAME = "qwen/qwen3-235b-a22b"
-
-# --- Few-Shot Examples ---
-# These examples will be included with every prompt to guide the model.
+# --- Few-Shot Examples to guide the model's output format ---
 FEW_SHOT_EXAMPLES = [
     {
         "role": "user",
@@ -46,136 +40,222 @@ FEW_SHOT_EXAMPLES = [
     },
     {
         "role": "assistant",
-        "content": """<thinking>
-        1.  **تحليل السؤال**: يسأل السؤال عن دلالة انخفاض أو غياب "الرجفان اللمسي" (tactile fremitus) في حالة "الانصباب الجنبي" (pleural effusion) وعن الآلية المسببة لذلك. الرجفان اللمسي هو الاهتزاز الذي يمكن الشعور به على جدار الصدر أثناء الكلام.
-        2.  **تقييم الخيارات**:
-            * **أ. تراكم السوائل؛ عزل الصوت**: الانصباب الجنبي هو بالفعل تراكم للسوائل في الغشاء الجنبي. هذا السائل يعمل كعازل، مما يمنع انتقال اهتزازات الصوت من الرئة إلى جدار الصدر. هذا يتطابق تمامًا مع находة انخفاض الرجفان اللمسي.
-            * **ب. احتباس الهواء؛ انهيار الحويصلات الهوائية**: هذا يصف حالة استرواح الصدر (pneumothorax) أو انخماص الرئة (atelectasis)، والتي لها موجودات فيزيائية مختلفة.
-            * **ج. التليف؛ انخفاض مرونة الرئة**: التليف الرئوي (Pulmonary fibrosis) يزيد من كثافة أنسجة الرئة، مما قد يؤدي إلى زيادة الرجفان اللمسي، وليس انخفاضه.
-            * **د. نمو الورم؛ انسداد الشعب الهوائية**: قد يسبب الورم انصبابًا جنبيًا، لكن السبب المباشر لانخفاض الرجفان في هذه الحالة هو السائل نفسه الذي يعزل الصوت. الخيار "أ" يصف الآلية الفيزيائية المباشرة بشكل أفضل.
-        3.  **الاستنتاج**: الخيار الأكثر دقة هو أن تراكم السوائل هو ما يسبب عزل الصوت، مما يؤدي إلى انخفاض الرجفان اللمسي.
-        </thinking>
-        Final Answer: أ"""
+        "content": """**التفكير خطوة بخطوة:**
+1.  **تحليل السؤال**: يسأل السؤال عن دلالة انخفاض أو غياب "الرجفان اللمسي" (tactile fremitus) في حالة "الانصباب الجنبي" (pleural effusion) وعن الآلية المسببة لذلك. الرجفان اللمسي هو الاهتزاز الذي يمكن الشعور به على جدار الصدر أثناء الكلام.
+2.  **تقييم الخيارات**:
+    * **أ. تراكم السوائل؛ عزل الصوت**: الانصباب الجنبي هو بالفعل تراكم للسوائل في الغشاء الجنبي. هذا السائل يعمل كعازل، مما يمنع انتقال اهتزازات الصوت من الرئة إلى جدار الصدر. هذا يتطابق تمامًا مع находة انخفاض الرجفان اللمسي.
+    * **ب. احتباس الهواء؛ انهيار الحويصلات الهوائية**: هذا يصف حالة استرواح الصدر (pneumothorax) أو انخماص الرئة (atelectasis)، والتي لها موجودات فيزيائية مختلفة.
+    * **ج. التليف؛ انخفاض مرونة الرئة**: التليف الرئوي (Pulmonary fibrosis) يزيد من كثافة أنسجة الرئة، مما قد يؤدي إلى زيادة الرجفان اللمسي، وليس انخفاضه.
+    * **د. نمو الورم؛ انسداد الشعب الهوائية**: قد يسبب الورم انصبابًا جنبيًا، لكن السبب المباشر لانخفاض الرجفان في هذه الحالة هو السائل نفسه الذي يعزل الصوت. الخيار "أ" يصف الآلية الفيزيائية المباشرة بشكل أفضل.
+3.  **الاستنتاج**: الخيار الأكثر دقة هو أن تراكم السوائل هو ما يسبب عزل الصوت، مما يؤدي إلى انخفاض الرجفان اللمسي.
+
+Final Answer: أ"""
     }
 ]
 
-# --- Initialize OpenAI Client for NVIDIA API ---
-client = OpenAI(
-  base_url = "https://integrate.api.nvidia.com/v1",
-  api_key = API_KEY
-)
-
-def get_model_answer(question: str) -> str:
+def extract_and_normalize_answer(full_text):
     """
-    Queries the language model with a question and few-shot examples,
-    then parses the output to extract only the final answer letter.
-
-    Args:
-        question: The question to send to the model.
-
-    Returns:
-        The extracted answer letter as a string (e.g., 'أ'),
-        or an error message if something goes wrong.
+    Parses the full text from the model to find, normalize, and translate the final answer letter.
     """
-    # Combine few-shot examples with the current question
-    messages = FEW_SHOT_EXAMPLES + [{"role": "user", "content": question}]
+    found_letter = None
+
+    # Stage 1: Look for explicit answer declarations (highest priority)
+    explicit_pattern = r"(?:Final Answer|الإجابة النهائية|الإجابة الصحيحة هي|الإجابة الصحيحة|الخلاصة)\s*[:：]?\s*\**\s*([A-Ea-eأ-ي])"
+    match = re.search(explicit_pattern, full_text, re.IGNORECASE | re.MULTILINE)
+    if match:
+        found_letter = match.group(1)
+
+    # Stage 2: If no explicit declaration, look for a letter at the very end of the text
+    if not found_letter and full_text:
+        last_char = full_text.strip()[-1]
+        # Check if the last character is a valid answer letter
+        if re.match(r"^[A-Ea-eأ-ي]$", last_char):
+             found_letter = last_char
+
+    if not found_letter:
+        return "N/A"
+
+    found_letter = found_letter.upper()
+
+    translation_map = {'A': 'أ', 'B': 'ب', 'C': 'ج', 'D': 'د', 'E': 'ه'}
+    if found_letter in translation_map:
+        found_letter = translation_map[found_letter]
+
+    if found_letter in ['ا', 'إ', 'آ']:
+        found_letter = 'أ'
+
+    if found_letter in ['أ', 'ب', 'ج', 'د', 'ه']:
+        return found_letter
+    else:
+        return "N/A" # Return N/A if a non-standard letter was found
+
+def extract_ground_truth_letter(answer_text):
+    """
+    NEW: Extracts the first Arabic letter from the ground truth answer text
+    to be used for accuracy calculation.
+    """
+    if not isinstance(answer_text, str):
+        return "N/A"
+    match = re.match(r"^\s*([أ-ي])", answer_text.strip())
+    if match:
+        letter = match.group(1)
+        if letter in ['ا', 'إ', 'آ', 'أ']:
+            return 'أ'
+        return letter
+    return "N/A"
+
+def get_full_reasoning(user_prompt):
+    """
+    Makes a single API call to get the model's full reasoning and returns the entire text.
+    """
+    messages = FEW_SHOT_EXAMPLES + [{"role": "user", "content": user_prompt}]
+    full_response = ""
+    max_retries = 3
+    retry_delay = 5
+
+    for attempt in range(max_retries):
+        try:
+            completion = client.chat.completions.create(
+              model="qwen/qwen3-235b-a22b",
+              messages=messages,
+              temperature=0.2,
+              top_p=0.7,
+              max_tokens=8192,
+              extra_body={"chat_template_kwargs": {"thinking": True}},
+              stream=True
+            )
+            print("  -> 🤖 Streaming response...", end="")
+            for chunk in completion:
+                reasoning = getattr(chunk.choices[0].delta, "reasoning_content", None)
+                if reasoning:
+                    print(reasoning, end="", flush=True)
+                    full_response += reasoning
+                if chunk.choices[0].delta.content is not None:
+                    print(chunk.choices[0].delta.content, end="", flush=True)
+                    full_response += chunk.choices[0].delta.content
+            print("\n")
+            return full_response
+        except Exception as e:
+            print(f"\n  -> An error occurred (Attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                print(f"  -> Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+            else:
+                return f"Failed after {max_retries} attempts: {e}"
+    return "Failed to get a response."
+
+
+def main():
+    """
+    Main function to read Quesstions, get predictions, calculate accuracy,
+    and save everything, with the ability to resume and re-process errors.
+    """
+    output_dir = os.path.dirname(OUTPUT_CSV)
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+        print(f"Created output directory: {output_dir}")
 
     try:
-        completion = client.chat.completions.create(
-          model=MODEL_NAME,
-          messages=messages,
-          temperature=0.1,
-          top_p=0.7,
-          max_tokens=1024,
-          stream=False
-        )
-        
-        # --- MODIFICATION START ---
-        
-        # Get the message object from the response
-        response_message = completion.choices[0].message
+        full_df = pd.read_csv(INPUT_CSV)
+        if Quesstion_COLUMN not in full_df.columns or ANSWER_COLUMN not in full_df.columns:
+            print(f"Error: Input CSV must have '{Quesstion_COLUMN}' and '{ANSWER_COLUMN}' columns.")
+            return
+    except FileNotFoundError:
+        print(f"Error: Input CSV '{INPUT_CSV}' not found. Ensure Drive is mounted and the path is correct.")
+        return
 
-        # Check if the message content is empty (None)
-        if response_message.content is None:
-            finish_reason = completion.choices[0].finish_reason
-            print(f"\nWarning: Model returned an empty response. Finish Reason: {finish_reason}")
-            return "Empty Response" # Return a specific string to avoid a crash
-
-        # If content exists, proceed as normal
-        full_response = response_message.content.strip()
-        
-        # --- MODIFICATION END ---
-        
-        # Parse the response to find the final answer letter
-        match = re.search(r"Final Answer:\s*([أ-ه])", full_response)
-        if match:
-            return match.group(1).strip()
+    # --- Resumability Logic ---
+    existing_results_df = pd.DataFrame()
+    if os.path.exists(OUTPUT_CSV):
+        print(f"📄 Found existing results file: '{OUTPUT_CSV}'. Loading previous work.")
+        existing_results_df = pd.read_csv(OUTPUT_CSV)
+        processed_Quesstions = existing_results_df[Quesstion_COLUMN].tolist()
+        print(f"  -> Found {len(processed_Quesstions)} previously processed Quesstions.")
+        df_to_process = full_df[~full_df[Quesstion_COLUMN].isin(processed_Quesstions)].copy()
+        if not df_to_process.empty:
+            print(f"  -> Resuming with {len(df_to_process)} remaining Quesstions.")
         else:
-            # Fallback for cases where the model doesn't follow the format
-            last_part = full_response.split('</thinking>')[-1]
-            letters = re.findall(r"[أ-ه]", last_part)
-            if letters:
-                return letters[-1] # Return the last letter found
-            return "Parsing Error"
-
-    except Exception as e:
-        print(f"An error occurred while querying the model: {e}")
-        return "API Error"
-
-# --- Main Execution ---
-if __name__ == "__main__":
-    print("Starting model prediction generation...")
-
-    # A simple check for the API key to avoid running without credentials
-    if API_KEY == "$API_KEY_REQUIRED_IF_EXECUTING_OUTSIDE_NGC" or not API_KEY:
-        print("ERROR: NVIDIA_API_KEY is not set. Please set it in Colab secrets or as an environment variable.")
+            print("  -> All Quesstions seem to be processed. Checking for failures to re-attempt.")
     else:
-        try:
-            print(f"Loading questions from: {QUESTIONS_FILE}")
-            questions_df = pd.read_csv(QUESTIONS_FILE, header=None)
+        print("📄 No existing results file found. Starting from scratch.")
+        df_to_process = full_df.copy()
 
-            print(f"Loading answers from: {ANSWERS_FILE}")
-            answers_df = pd.read_csv(ANSWERS_FILE, header=None)
+    # --- Initial Processing of New Quesstions ---
+    new_results_list = []
+    if not df_to_process.empty:
+        print("="*50)
+        print(f"🚀 Starting prediction for {len(df_to_process)} new Quesstions...")
+        print("="*50)
+        start_time = time.time()
+        for index, row in df_to_process.iterrows():
+            Quesstion = row[Quesstion_COLUMN]
+            ground_truth_text = row[ANSWER_COLUMN]
+            original_index = full_df.index[full_df[Quesstion_COLUMN] == Quesstion].tolist()[0]
+            print(f"Processing Quesstion {original_index + 1}/{len(full_df)}: '{str(Quesstion)[:50]}...'")
 
-            if len(questions_df) != len(answers_df):
-                print("ERROR: The number of questions and answers do not match. Please check your files.")
-            else:
-                ground_truth_df = pd.DataFrame({
-                    'Question': questions_df[0],
-                    'Ground_Truth_Answer': answers_df[0]
-                })
-                print("Successfully loaded and combined questions and answers.")
+            full_reasoning = get_full_reasoning(Quesstion)
+            predicted_answer = extract_and_normalize_answer(full_reasoning)
+            ground_truth_letter = extract_ground_truth_letter(ground_truth_text)
+            print(f"  -> Ground Truth: {ground_truth_letter} | Predicted: {predicted_answer}")
 
-                predictions = []
-                # Using tqdm for a progress bar
-                for index, row in tqdm(ground_truth_df.iterrows(), total=len(ground_truth_df), desc="Generating Predictions"):
-                    question = row['Question']
-                    
-                    # Get the prediction from the model
-                    model_answer = get_model_answer(question)
-                    predictions.append(model_answer)
-                    
-                # Add the predictions as a new column
-                ground_truth_df['Model_Prediction'] = predictions
-                
-                # Save the results to a new CSV file
-                ground_truth_df.to_csv(OUTPUT_FILE, index=False, encoding='utf-8-sig')
-                print(f"\nPredictions saved successfully to {OUTPUT_FILE}")
+            new_results_list.append({
+                'Quesstion': Quesstion,
+                'Answer': ground_truth_text,
+                'Full_Model_Reasoning': full_reasoning,
+                'Ground_Truth_Letter': ground_truth_letter,
+                'Final_Answer_Letter': predicted_answer
+            })
+        end_time = time.time()
+        print(f"⏱️ New Quesstion processing time: {end_time - start_time:.2f} seconds")
 
-                # Calculate accuracy
-                correct_predictions = (ground_truth_df['Ground_Truth_Answer'] == ground_truth_df['Model_Prediction']).sum()
-                total_predictions = len(ground_truth_df)
-                accuracy = (correct_predictions / total_predictions) * 100 if total_predictions > 0 else 0
+    # --- Combine existing and new results ---
+    new_results_df = pd.DataFrame(new_results_list)
+    final_df = pd.concat([existing_results_df, new_results_df], ignore_index=True)
 
-                print("\n--- Evaluation Complete ---")
-                print(f"Model: {MODEL_NAME}")
-                print(f"Total Questions: {total_predictions}")
-                print(f"Correct Predictions: {correct_predictions}")
-                print(f"Final Accuracy: {accuracy:.2f}%")
+    # --- Re-processing Logic for Failed Answers ("N/A") ---
+    df_to_retry = final_df[final_df['Final_Answer_Letter'] == 'N/A'].copy()
+    if not df_to_retry.empty:
+        print("\n" + "="*50)
+        print(f"🕵️ Found {len(df_to_retry)} Quesstions with 'N/A' answers. Re-attempting...")
+        print("="*50)
+        retry_start_time = time.time()
+        for index, row in df_to_retry.iterrows():
+            Quesstion = row[Quesstion_COLUMN]
+            print(f"Re-processing Quesstion for index {index}: '{str(Quesstion)[:50]}...'")
 
+            full_reasoning = get_full_reasoning(Quesstion)
+            predicted_answer = extract_and_normalize_answer(full_reasoning)
+            print(f"  -> Re-attempted Prediction: {predicted_answer}")
 
-        except FileNotFoundError as e:
-            print(f"ERROR: A file was not found. Please check the paths for both the questions and answers files.")
-            print(f"Details: {e}")
-        except Exception as e:
-            print(f"An unexpected error occurred: {e}")
+            # Update the DataFrame at the specific index
+            final_df.loc[index, 'Full_Model_Reasoning'] = full_reasoning
+            final_df.loc[index, 'Final_Answer_Letter'] = predicted_answer
+        retry_end_time = time.time()
+        print(f"⏱️ Re-processing time: {retry_end_time - retry_start_time:.2f} seconds")
+    else:
+        print("\n✅ No 'N/A' answers found to re-attempt.")
+
+    # --- Final Calculation and Summary ---
+    if not final_df.empty:
+        # Reorder columns for clarity
+        cols_order = ['Quesstion', 'Answer', 'Ground_Truth_Letter', 'Final_Answer_Letter', 'Full_Model_Reasoning']
+        final_df = final_df[[col for col in cols_order if col in final_df.columns]]
+        
+        # Save the final, complete DataFrame
+        final_df.to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
+
+        # Calculate Accuracy
+        # Exclude Quesstions where ground truth couldn't be parsed
+        valid_for_accuracy = final_df[final_df['Ground_Truth_Letter'] != 'N/A']
+        correct_predictions = (valid_for_accuracy['Final_Answer_Letter'] == valid_for_accuracy['Ground_Truth_Letter']).sum()
+        total_Quesstions_for_accuracy = len(valid_for_accuracy)
+        accuracy = (correct_predictions / total_Quesstions_for_accuracy) * 100 if total_Quesstions_for_accuracy > 0 else 0
+
+        print("\n" + "="*50)
+        print(f"✅ Processing complete.")
+        print(f"📊 Final Accuracy: {accuracy:.2f}% ({correct_predictions}/{total_Quesstions_for_accuracy} correct)")
+        print(f"💾 All results saved to '{OUTPUT_CSV}'.")
+        print("="*50)
+
+if __name__ == "__main__":
+    main()
