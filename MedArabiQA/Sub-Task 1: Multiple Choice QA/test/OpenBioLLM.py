@@ -250,33 +250,44 @@ def main():
         if not failed_indices:
             print("✅ No failed questions found to rerun. Proceeding directly to evaluation.")
         else:
-            print(f"⚠️ Found {len(failed_indices)} failed questions. Starting rerun process...")
+            # --- CODE MODIFIED: Enhanced logging for failed questions to aid manual analysis ---
+            print(f"⚠️ Found {len(failed_indices)} failed questions. Starting rerun process for manual inspection...")
             for index in failed_indices:
                 question = df.loc[index, QUESTION_COLUMN]
-                print(f"Rerunning question {index + 1}/{len(df)}...")
+                ground_truth_letter = str(df.loc[index, ANSWER_COLUMN]).strip()[0] if str(df.loc[index, ANSWER_COLUMN]).strip() else "N/A"
+
+                # Print a detailed block for each failed question
+                print("\n" + "="*70)
+                print(f"Rerunning Question {index + 1}/{len(df)}")
+                print(f"  - Ground Truth Answer: {ground_truth_letter}")
+                print(f"  - Original Question Sent to LLM:\n{question}")
+                print("."*40)
+
                 new_answer = ""
-                
-                # --- MODIFIED: Retry logic with sampling and full response printing ---
-                for attempt in range(2): 
+                for attempt in range(2):
                     print(f"  Attempt {attempt + 1}...")
                     # Use sampling=True to get different reasoning
                     predicted_letter, full_response = generate_answer(question, pipeline, use_sampling=True)
-                    
+
                     if predicted_letter and predicted_letter != "INFERENCE_ERROR":
                         new_answer = predicted_letter
-                        break 
-                    
-                    # If parsing fails, print the full reasoning from the model
-                    print("  -> Rerun failed to extract answer. LLM reasoning was:")
-                    print("  " + "="*20 + " MODEL RESPONSE " + "="*20)
-                    print(f"  {full_response.strip()}")
-                    print("  " + "="*58)
+                        print(f"  --> SUCCESS on attempt {attempt + 1}. Parsed answer: '{new_answer}'")
+                        break
+
+                    # If parsing fails, print the full model response for manual extraction
+                    print("  --> Rerun failed to parse an answer. Full model response below:")
+                    print("." * 20 + " MODEL RESPONSE " + "." * 20)
+                    # Indent the response for better readability
+                    indented_response = "\n".join([f"    {line}" for line in full_response.strip().split("\n")])
+                    print(indented_response)
+                    print("." * 58)
                     if attempt == 0:
-                        print(f"  -> Attempt 1 failed. Retrying with different sampling...")
+                        print("  --> Retrying with different sampling...")
 
                 predictions[index] = new_answer
-                ground_truth_letter = str(df.loc[index, ANSWER_COLUMN]).strip()[0]
-                print(f"  -> Ground Truth: {ground_truth_letter} | Final Predicted Letter: {new_answer}")
+                print(f"\n  Final Recorded Prediction for Q{index + 1}: '{new_answer}'")
+                print("="*70)
+            # --- End of Modifications ---
 
             print("\n✅ Rerun complete. Saving updated results...")
             updated_predictions_df = pd.DataFrame(predictions)
@@ -291,8 +302,7 @@ def main():
         for index, row in df.iterrows():
             question = row[QUESTION_COLUMN]
             print(f"Processing question {index + 1}/{total_questions}...")
-            # --- MODIFIED: Call generate_answer without sampling for the first run ---
-            # We only need the letter here, so we discard the full response with `_`
+            # Call generate_answer without sampling for the first run
             answer_letter, _ = generate_answer(question, pipeline, use_sampling=False)
             predictions.append(answer_letter)
             ground_truth_letter = str(row[ANSWER_COLUMN]).strip()[0] if str(row[ANSWER_COLUMN]).strip() else "N/A"
