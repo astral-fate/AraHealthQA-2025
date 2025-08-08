@@ -1,162 +1,319 @@
-# --- Final Script with Data Pre-processing ---
-
-# 49%
 import os
 import re
 import pandas as pd
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 import time
-from google.colab import drive, userdata, files
+# Import the userdata module for Google Colab secrets
+from google.colab import userdata
+from sklearn.metrics import accuracy_score
+# Import libraries for local Hugging Face model inference
+import torch
+import transformers
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from huggingface_hub import login
 
-# --- Model Configuration ---
-MODEL_NAME = "aaditya/OpenBioLLM-Llama3-8B"
+# --- MODIFIED: File paths and column names updated for your dataset ---
+INPUT_CSV = '/content/drive/MyDrive/AraHealthQA/t2t1/test/subtask1_input_test.csv'
+# Using a new output file name to reflect the new input data
+OUTPUT_CSV = '/content/drive/MyDrive/AraHealthQA/t2t1/test/OpenBioLLM.csv'
 
-# 4-bit quantization config
-quantization_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_quant_type="nf4",
-    bnb_4bit_compute_dtype=torch.bfloat16
-)
-
-print(f"Loading quantized model '{MODEL_NAME}'...")
-
-try:
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-
-    if tokenizer.chat_template is None:
-        tokenizer.chat_template = "{% for message in messages %}{{'<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n' + message['content'] + '<|eot_id|>'}}{% endfor %}{% if add_generation_prompt %}{{'<|start_header_id|>assistant<|end_header_id|>\n\n'}}{% endif %}"
-        print("Chat template manually set.")
-
-    tokenizer.pad_token = tokenizer.eos_token
-
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_NAME,
-        quantization_config=quantization_config,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-        pad_token_id=tokenizer.pad_token_id,
-    )
-    print("\n✅ Quantized OpenBioLLM-8B model loaded successfully.")
-
-except Exception as e:
-    print(f"Error loading model: {e}.")
-    exit()
-
-# --- File Paths ---
-try:
-    drive.mount('/content/drive')
-except:
-    print("Google Drive is already mounted or failed to mount.")
-    
-INPUT_TSV = "/content/drive/MyDrive/AraHealthQA/t2t1/subtask1_questions.tsv"
-OUTPUT_CSV = "/content/drive/MyDrive/AraHealthQA/t2t1/OpenBioLLM_8B_answers.csv"
+# --- MODIFIED: Column names updated to match your CSV file ---
+QUESTION_COLUMN = 'Quesstion'
+ANSWER_COLUMN = 'Answer'
+# The 'Category' column from your file is available in the dataframe but not used in this script's logic.
+# --- End of Modifications ---
 
 
-# --- NEW: Data Cleaning and Formatting Function ---
-def clean_and_format_question(text):
+# --- Chain of Thought & Few-Shot Prompting Configuration (Using pure Arabic format) ---
+SYSTEM_PROMPT = """أنت خبير طبي ومساعد امتحانات دقيق. مهمتك هي حل سؤال متعدد الخيارات باللغة العربية.
+أولاً، ستقوم بعملية تفكير خطوة بخطوة. قم بتحليل السؤال الطبي، وتقييم كل خيار (أ, ب, ج, د, هـ)، وشرح أسباب اختيارك للإجابة الصحيحة.
+ثانياً، بعد شرح أسبابك، يجب عليك تقديم الإجابة النهائية في سطر جديد بالتنسيق التالي:
+الإجابة النهائية: [الحرف العربي للخيار الصحيح]
+
+هذه العملية المكونة من خطوتين إلزامية. يجب أن تكون إجابتك بأكملها باللغة العربية.
+"""
+
+FEW_SHOT_EXAMPLES = [
+    {
+        "role": "user",
+        "content": """املأ الفراغات في الجملة التالية:
+في حالة الانصباب الجنبي، يشير انخفاض أو غياب الرجفان اللمسي على الجانب المصاب إلى ____، والذي ينتج عن ____.
+أ. تراكم السوائل؛ عزل الصوت
+ب. احتباس الهواء؛ انهيار الحويصلات الهوائية
+ج. التليف؛ انخفاض مرونة الرئة
+د. نمو الورم؛ انسداد الشعب الهوائية"""
+    },
+    {
+        "role": "assistant",
+        "content": """**التفكير خطوة بخطوة:**
+1.  **تحليل السؤال**: يسأل السؤال عن دلالة انخفاض أو غياب "الرجفان اللمسي" (tactile fremitus) في حالة "الانصباب الجنبي" (pleural effusion) وعن الآلية المسببة لذلك. الرجفان اللمسي هو الاهتزاز الذي يمكن الشعور به على جدار الصدر أثناء الكلام.
+2.  **تقييم الخيارات**:
+    * **أ. تراكم السوائل؛ عزل الصوت**: الانصباب الجنبي هو بالفعل تراكم للسوائل في الغشاء الجنبي. هذا السائل يعمل كعازل، مما يمنع انتقال اهتزازات الصوت من الرئة إلى جدار الصدر. هذا يتطابق تمامًا مع находة انخفاض الرجفان اللمسي.
+    * **ب. احتباس الهواء؛ انهيار الحويصلات الهوائية**: هذا يصف حالة استرواح الصدر (pneumothorax) أو انخماص الرئة (atelectasis)، والتي لها موجودات فيزيائية مختلفة.
+    * **ج. التليف؛ انخفاض مرونة الرئة**: التليف الرئوي (Pulmonary fibrosis) يزيد من كثافة أنسجة الرئة، مما قد يؤدي إلى زيادة الرجفان اللمسي، وليس انخفاضه.
+    * **د. نمو الورم؛ انسداد الشعب الهوائية**: قد يسبب الورم انصبابًا جنبيًا، لكن السبب المباشر لانخفاض الرجفان في هذه الحالة هو السائل نفسه الذي يعزل الصوت. الخيار "أ" يصف الآلية الفيزيائية المباشرة بشكل أفضل.
+3.  **الاستنتاج**: الخيار الأكثر دقة هو أن تراكم السوائل هو ما يسبب عزل الصوت، مما يؤدي إلى انخفاض الرجفان اللمسي.
+
+الإجابة النهائية: أ"""
+    }
+]
+
+
+
+# --- Function to Generate Answers using Local Hugging Face Model ---
+def generate_answer(question, pipeline, use_sampling=False):
     """
-    Cleans and standardizes the format of a raw question string to make it easier for the model.
+    Generates an answer using a local transformers pipeline.
+    
+    Args:
+        question (str): The MCQ question to answer.
+        pipeline (transformers.Pipeline): The initialized text-generation pipeline.
+        use_sampling (bool): If True, uses temperature-based sampling for more varied outputs.
+                             If False, uses greedy decoding for deterministic output.
+                             
+    Returns:
+        tuple: A tuple containing the parsed Arabic letter (or "") and the full response text.
     """
-    if not isinstance(text, str):
-        return ""
-
-    # Normalize whitespace
-    text = re.sub(r'\s+', ' ', text).strip()
-
-    # Separate the question from the options based on the first Arabic letter choice
-    parts = re.split(r'\s([أ-ي])\.', text, 1)
-    
-    if len(parts) < 3:
-        # If split fails, return the cleaned text as-is
-        return f"Question: {text}\nChoices:"
-
-    question_body = parts[0]
-    # Reconstruct the options part
-    options_part = parts[1] + '.' + parts[2]
-    
-    # Standardize the options formatting (add newlines)
-    options_part = re.sub(r'\s([أ-ي])\.', r'\n\1.', options_part)
-
-    # Reconstruct in the final, clean format
-    formatted_question = f"Question: {question_body.strip()}\nChoices:\n{options_part.strip()}"
-    return formatted_question
-
-
-# --- Function to Generate Answers ---
-def generate_answer(question):
-    # The system prompt is now simpler as the formatting is handled beforehand
     messages = [
-        {"role": "system", "content": "You are an AI assistant. Analyze the user's question and provide the single correct Arabic letter for the answer."},
-        {"role": "user", "content": question},
+        {"role": "system", "content": SYSTEM_PROMPT}
     ]
-    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    terminators = [tokenizer.eos_token_id, tokenizer.convert_tokens_to_ids("<|eot_id|>")]
-    
+    messages.extend(FEW_SHOT_EXAMPLES)
+    final_instruction = "الآن، اتبع التعليمات بدقة. ابدأ بالتفكير خطوة بخطوة ثم اختتم إجابتك بـ 'الإجابة النهائية: ' متبوعًا بالحرف الصحيح فقط."
+    messages.append({"role": "user", "content": f"{question}\n\n{final_instruction}"})
+
     try:
-        inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
-        output_sequences = model.generate(
-            **inputs,
-            max_new_tokens=10, 
-            eos_token_id=terminators,
-            do_sample=False, 
-            temperature=None, 
-            top_p=None
+        prompt = pipeline.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
         )
-        response_text = tokenizer.decode(output_sequences[0][inputs['input_ids'].shape[-1]:], skip_special_tokens=True)
-        print(f"   -> Raw Model Response: '{response_text}'")
+
+        terminators = [
+            pipeline.tokenizer.eos_token_id,
+            pipeline.tokenizer.convert_tokens_to_ids("<|eot_id|>")
+        ]
+
+        # --- MODIFIED: Use different generation settings for reruns ---
+        generation_kwargs = {"do_sample": False} # Default: deterministic
+        if use_sampling:
+            # For reruns: use sampling to get a different response
+            generation_kwargs = {"do_sample": True, "temperature": 0.6}
+
+        outputs = pipeline(
+            prompt,
+            max_new_tokens=1024,
+            eos_token_id=terminators,
+            **generation_kwargs
+        )
+
+        response_text = outputs[0]["generated_text"][len(prompt):]
+        parsed_letter = ""
+
+        # --- MODIFIED: More robust parsing logic ---
+        # 1. Primary Method: Look for the English answer pattern, allowing for optional quotes.
+        english_match = re.search(r"The (?:correct )?answer is\s+'?([A-E])'?", response_text, re.IGNORECASE)
+        if english_match:
+            english_letter = english_match.group(1).upper()
+            translation_map = {'A': 'أ', 'B': 'ب', 'C': 'ج', 'D': 'د', 'E': 'ه'}
+            parsed_letter = translation_map.get(english_letter, "")
+            return parsed_letter, response_text
+
+        # 2. Fallback: Look for the original Arabic format.
+        arabic_match = re.search(r"الإجابة النهائية:\s*([\u0621-\u064A])", response_text, re.IGNORECASE)
+        if arabic_match:
+            parsed_letter = arabic_match.group(1)
+            return parsed_letter, response_text
         
-        # Use a simple regex to find the first Arabic letter in the response
-        match = re.search(r'([أ-ي])', response_text)
-        return match.group(1) if match else "PARSE_FAIL"
-            
+        # 3. Last Resort Heuristic: Find the last mentioned option letter in the text
+        option_mentions = re.findall(r"option\s+([A-E])", response_text, re.IGNORECASE)
+        if option_mentions:
+            english_letter = option_mentions[-1].upper()
+            translation_map = {'A': 'أ', 'B': 'ب', 'C': 'ج', 'D': 'د', 'E': 'ه'}
+            parsed_letter = translation_map.get(english_letter, "")
+            print(f"  -> Found answer using heuristic: last mentioned option '{english_letter}'.")
+            return parsed_letter, response_text
+
+
+        # If all parsing fails, return empty letter but the full response
+        return "", response_text
+
     except Exception as e:
-        print(f"   -> An error occurred during model inference: {e}")
-        return "ERROR"
+        error_message = f"An error occurred during model inference: {e}"
+        print(f"  -> {error_message}")
+        return "INFERENCE_ERROR", error_message
 
 
-# --- Main Execution ---
-def main():
-    try:
-        # Read the raw data file
-        df = pd.read_csv(INPUT_TSV, sep='\t', header=None, on_bad_lines='skip')
-        df.columns = ['raw_question']
-    except FileNotFoundError:
-        print(f"Error: Could not find the input file '{INPUT_TSV}'. Please check the path and ensure Drive is mounted.")
+
+# --- Function to Evaluate MCQ Accuracy ---
+def evaluate_mcq_accuracy(predictions, ground_truths):
+    """Calculates and prints the accuracy of the model's predictions, normalizing Alif."""
+    print("\n" + "="*50)
+    print("🚀 Starting Evaluation...")
+    print("="*50)
+
+    error_codes = ["INFERENCE_ERROR", ""]
+    valid_indices = [i for i, p in enumerate(predictions) if p not in error_codes]
+    valid_predictions = [predictions[i] for i in valid_indices]
+    valid_ground_truths = [ground_truths[i] for i in valid_indices]
+
+    if not valid_predictions:
+        print("No valid predictions to evaluate. Check for widespread inference or parsing errors.")
         return
 
-    print(f"\nStarting prediction generation for {len(df)} questions...")
-    predictions, total_questions = [], len(df)
-    start_time = time.time()
-    
-    for index, row in df.iterrows():
-        raw_question = row['raw_question']
-        if pd.isna(raw_question) or not str(raw_question).strip():
-            print(f"Skipping empty line at row {index + 1}/{total_questions}.")
-            predictions.append("EMPTY_ROW")
-            continue
-        
-        print(f"Processing question {index + 1}/{total_questions}...")
-        
-        # --- APPLY THE CLEANING FUNCTION ---
-        formatted_question = clean_and_format_question(raw_question)
-        print(f"   -> Formatted Input:\n{formatted_question}") # Optional: to see the formatted question
-        
-        answer = generate_answer(formatted_question)
-        predictions.append(answer)
-        print(f"   -> Generated Answer (for CSV): {answer}")
-    
-    end_time = time.time()
-    print(f"\nTotal processing time: {(end_time - start_time) / 60:.2f} minutes.")
-    
-    pd.DataFrame(predictions).to_csv(OUTPUT_CSV, header=False, index=False)
-    print("\n" + "="*50 + f"\n✅ Prediction process completed.\n📄 Results saved to '{OUTPUT_CSV}'.\n" + "="*50)
-    
+    # Helper function to normalize different forms of Alif
+    def normalize_alif(letter):
+        # Replaces hamza forms (أ, إ, آ) with the plain Alif (ا)
+        return str(letter).replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
+
+    # Normalize both predictions and ground truths before comparison
+    normalized_predictions = [normalize_alif(p) for p in valid_predictions]
+    normalized_ground_truths = [normalize_alif(g) for g in valid_ground_truths]
+
+    # Calculate accuracy using the normalized lists
+    accuracy = accuracy_score(normalized_ground_truths, normalized_predictions)
+    correct_predictions = int(accuracy * len(normalized_predictions))
+    total_valid_predictions = len(valid_predictions)
+    total_questions = len(ground_truths)
+    failed_or_empty = total_questions - total_valid_predictions
+
+    print(f"Total Questions Attempted: {total_questions}")
+    print(f"Final Unanswered / Error Count: {failed_or_empty}")
+    print(f"Valid Predictions to Evaluate: {total_valid_predictions}")
+    print("-" * 20)
+    print(f"Correct Predictions: {correct_predictions} / {total_valid_predictions}")
+    print(f"📊 Accuracy (on valid responses): {accuracy * 100:.2f}%")
+    print("="*50 + "\n✅ Evaluation Complete.\n" + "="*50)
+
+
+
+# --- Main Execution Logic ---
+def main():
+    """Main function to run the prediction and evaluation process."""
     try:
-        files.download(OUTPUT_CSV)
-        print(f"\n🚀 Downloading '{OUTPUT_CSV}'...")
-    except (NameError, ImportError):
-        print(f"\nTo download '{OUTPUT_CSV}', please use the file browser on the left.")
+        hf_token = userdata.get('HF_TOKEN')
+        login(token=hf_token)
+        print("✅ Successfully logged into Hugging Face Hub.")
+
+        model_id = "aaditya/Llama3-OpenBioLLM-8B"
+        print(f"🚀 Initializing local model pipeline: {model_id}")
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"Device set to use {device}")
+
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
+        llama3_template = (
+            "{% if messages[0]['role'] == 'system' %}"
+            "{{ bos_token + '<|start_header_id|>system<|end_header_id|>\n\n' + messages[0]['content'] + '<|eot_id|>' }}"
+            "{% endif %}"
+            "{% for message in messages %}"
+            "{% if message['role'] == 'user' %}"
+            "{{ bos_token + '<|start_header_id|>user<|end_header_id|>\n\n' + message['content'] + '<|eot_id|>' }}"
+            "{% elif message['role'] == 'assistant' %}"
+            "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' + message['content'] + '<|eot_id|>' }}"
+            "{% endif %}"
+            "{% endfor %}"
+            "{% if add_generation_prompt %}"
+            "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"
+            "{% endif %}"
+        )
+        tokenizer.chat_template = llama3_template
+
+        pipeline = transformers.pipeline(
+            "text-generation",
+            model=model_id,
+            tokenizer=tokenizer,
+            model_kwargs={"torch_dtype": torch.bfloat16},
+            device=device,
+        )
+        print("✅ Hugging Face pipeline initialized successfully.")
+    except Exception as e:
+        print(f"❌ Failed to initialize the Hugging Face pipeline. Error: {e}")
+        return
+
+    try:
+        df = pd.read_csv(INPUT_CSV, encoding='utf-8')
+    except FileNotFoundError:
+        print(f"Error: The file '{INPUT_CSV}' was not found. Please check the path.")
+        return
+    except Exception as e:
+        print(f"An error occurred while reading the CSV: {e}")
+        return
+
+    df.dropna(subset=[QUESTION_COLUMN, ANSWER_COLUMN], inplace=True)
+    df.reset_index(drop=True, inplace=True)
+
+    if os.path.exists(OUTPUT_CSV):
+        print(f"✅ Found existing prediction file: '{OUTPUT_CSV}'.")
+        predictions_df = pd.read_csv(OUTPUT_CSV, header=None, encoding='utf-8', na_filter=False)
+        predictions = predictions_df[0].astype(str).tolist()
+
+        error_codes_to_rerun = ["INFERENCE_ERROR", ""]
+        failed_indices = [i for i, p in enumerate(predictions) if p.strip() in error_codes_to_rerun]
+
+        if not failed_indices:
+            print("✅ No failed questions found to rerun. Proceeding directly to evaluation.")
+        else:
+            print(f"⚠️ Found {len(failed_indices)} failed questions. Starting rerun process...")
+            for index in failed_indices:
+                question = df.loc[index, QUESTION_COLUMN]
+                print(f"Rerunning question {index + 1}/{len(df)}...")
+                new_answer = ""
+                
+                # --- MODIFIED: Retry logic with sampling and full response printing ---
+                for attempt in range(2): 
+                    print(f"  Attempt {attempt + 1}...")
+                    # Use sampling=True to get different reasoning
+                    predicted_letter, full_response = generate_answer(question, pipeline, use_sampling=True)
+                    
+                    if predicted_letter and predicted_letter != "INFERENCE_ERROR":
+                        new_answer = predicted_letter
+                        break 
+                    
+                    # If parsing fails, print the full reasoning from the model
+                    print("  -> Rerun failed to extract answer. LLM reasoning was:")
+                    print("  " + "="*20 + " MODEL RESPONSE " + "="*20)
+                    print(f"  {full_response.strip()}")
+                    print("  " + "="*58)
+                    if attempt == 0:
+                        print(f"  -> Attempt 1 failed. Retrying with different sampling...")
+
+                predictions[index] = new_answer
+                ground_truth_letter = str(df.loc[index, ANSWER_COLUMN]).strip()[0]
+                print(f"  -> Ground Truth: {ground_truth_letter} | Final Predicted Letter: {new_answer}")
+
+            print("\n✅ Rerun complete. Saving updated results...")
+            updated_predictions_df = pd.DataFrame(predictions)
+            updated_predictions_df.to_csv(OUTPUT_CSV, header=False, index=False, encoding='utf-8')
+            print(f"Successfully saved updated predictions to '{OUTPUT_CSV}'.")
+    else:
+        print(f"'{OUTPUT_CSV}' not found. Starting a full prediction run...")
+        predictions = []
+        total_questions = len(df)
+        start_time = time.time()
+
+        for index, row in df.iterrows():
+            question = row[QUESTION_COLUMN]
+            print(f"Processing question {index + 1}/{total_questions}...")
+            # --- MODIFIED: Call generate_answer without sampling for the first run ---
+            # We only need the letter here, so we discard the full response with `_`
+            answer_letter, _ = generate_answer(question, pipeline, use_sampling=False)
+            predictions.append(answer_letter)
+            ground_truth_letter = str(row[ANSWER_COLUMN]).strip()[0] if str(row[ANSWER_COLUMN]).strip() else "N/A"
+            print(f"  -> Ground Truth: {ground_truth_letter} | Final Predicted Letter: {answer_letter}")
+
+        end_time = time.time()
+        total_duration = end_time - start_time
+        minutes = int(total_duration // 60)
+        seconds = int(total_duration % 60)
+        print("\n" + "="*50)
+        print(f"✅ Prediction generation complete.")
+        print(f"⏱️  Total time taken: {minutes} minutes and {seconds} seconds.")
+        print("="*50)
+
+        predictions_df = pd.DataFrame(predictions)
+        predictions_df.to_csv(OUTPUT_CSV, header=False, index=False, encoding='utf-8')
+        print(f"\nSuccessfully saved predictions to '{OUTPUT_CSV}'.")
+
+    ground_truths = [str(ans).strip()[0] if str(ans).strip() else "INVALID_TRUTH" for ans in df[ANSWER_COLUMN].tolist()]
+    evaluate_mcq_accuracy(predictions, ground_truths)
+
 
 if __name__ == "__main__":
     main()
